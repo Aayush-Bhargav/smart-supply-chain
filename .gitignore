@@ -1,0 +1,15 @@
+# Python Backend
+supply-chain-api/venv/
+supply-chain-api/__pycache__/
+supply-chain-api/*.pyc
+.env
+
+# Next.js Frontend
+supply-chain-ui/node_modules/
+supply-chain-ui/.next/
+supply-chain-ui/out/
+supply-chain-ui/build/
+supply-chain-ui/.env*.local
+
+# OS Files
+.DS_Store
