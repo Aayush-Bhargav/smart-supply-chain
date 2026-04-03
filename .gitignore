@@ -10,6 +10,51 @@ supply-chain-ui/.next/
 supply-chain-ui/out/
 supply-chain-ui/build/
 supply-chain-ui/.env*.local
+<<<<<<< Updated upstream
+=======
+
+# Large ML Model Files (CAUSING PUSH ISSUES)
+supply-chain-api/*.pth
+supply-chain-api/*.pkl
+supply-chain-api/*.joblib
+
+# Large Data Files
+supply-chain-api/*.csv
+supply-chain-api/*.xls
+supply-chain-api/*.xlsx
+
+# Generated Cache and Data Files
+supply-chain-api/city_coords_cache.json
+supply-chain-api/feature_schema.json
+supply-chain-api/category_mapping.json
+supply-chain-api/nodes_inference.json
+supply-chain-api/edges_inference.json
+supply-chain-api/nodes.json
+supply-chain-api/edges.json
+supply-chain-api/graph_inference.json
+
+# Package Manager Files
+supply-chain-ui/package-lock.json
+supply-chain-ui/yarn.lock
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+>>>>>>> Stashed changes
 
 # OS Files
 .DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment Files
+.env.local
+.env.production
+
+# Git
+.git/
+.gitignore
