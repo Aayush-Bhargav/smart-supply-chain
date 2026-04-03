@@ -10,8 +10,6 @@ supply-chain-ui/.next/
 supply-chain-ui/out/
 supply-chain-ui/build/
 supply-chain-ui/.env*.local
-<<<<<<< Updated upstream
-=======
 
 # Large ML Model Files (CAUSING PUSH ISSUES)
 supply-chain-api/*.pth
@@ -42,7 +40,6 @@ supply-chain-ui/yarn.lock
 .idea/
 *.swp
 *.swo
->>>>>>> Stashed changes
 
 # OS Files
 .DS_Store
