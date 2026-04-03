@@ -356,9 +356,9 @@ export default function Home() {
 
         // Take up to 20 from EACH mode → you will finally see ships & trucks
         const balancedEdges = [
-          ...airEdges.slice(0, 20),
-          ...oceanEdges.slice(0, 20),
-          ...truckEdges.slice(0, 20),
+          ...airEdges.slice(0, 100),
+          ...oceanEdges.slice(0, 100),
+          ...truckEdges.slice(0, 10000000),
         ];
 
         setNodes(rawNodes);
