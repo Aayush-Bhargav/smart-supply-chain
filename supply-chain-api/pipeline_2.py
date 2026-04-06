@@ -85,7 +85,7 @@ HAS_AIRPORT = {
     "Ottawa", "Montréal", "Munich", "Berlin", "Madrid", "Rome", "Milan",
     "Vienna", "Stockholm", "Oslo", "Helsinki", "Copenhagen", "Budapest",
     "Warsaw", "Prague", "Cairo", "Nairobi", "Johannesburg", "Bangkok",
-    "Jakarta", "Manila", "Taipei", "Seoul"
+    "Jakarta", "Manila", "Taipei", "Seoul", "Bangalore"
 }
 
 HAS_SEAPORT = {
@@ -265,7 +265,7 @@ inference_edge_set = set()
 # 1) TRUCK BACKBONE: KNN over all nodes
 # ============================================================
 print("🚚 Building truck backbone...")
-K_TRUCK = 6
+K_TRUCK = 20
 
 if len(valid_nodes) >= 2:
     n_neighbors = min(K_TRUCK + 1, len(valid_nodes))
@@ -301,7 +301,7 @@ if len(airport_nodes) >= 2:
     airport_coords = np.array([[n["lat"], n["lon"]] for n in airport_nodes], dtype=float)
     airport_ids = [n["node_id"] for n in airport_nodes]
 
-    K_AIR = 8
+    K_AIR = 100000
     n_neighbors = min(K_AIR + 1, len(airport_nodes))
     nn_air = NearestNeighbors(n_neighbors=n_neighbors, metric="haversine")
     nn_air.fit(np.radians(airport_coords))
@@ -335,7 +335,7 @@ if len(seaport_nodes) >= 2:
     seaport_coords = np.array([[n["lat"], n["lon"]] for n in seaport_nodes], dtype=float)
     seaport_ids = [n["node_id"] for n in seaport_nodes]
 
-    K_OCEAN = 8
+    K_OCEAN = 100000
     n_neighbors = min(K_OCEAN + 1, len(seaport_nodes))
     nn_sea = NearestNeighbors(n_neighbors=n_neighbors, metric="haversine")
     nn_sea.fit(np.radians(seaport_coords))

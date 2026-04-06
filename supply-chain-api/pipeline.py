@@ -288,12 +288,18 @@ for _, row in df.iterrows():
         float(physical_mode_map.get(physical_mode, 1.0)),
         *cat_vec
     ]
+    actual_days = float(row["Days for shipping (real)"])
+    scheduled_days = float(row["Days for shipment (scheduled)"]) if pd.notna(row["Days for shipment (scheduled)"]) else 0.0
 
+    delay = actual_days - scheduled_days
+
+    # Optional: clamp negative delays (recommended)
+    delay = max(delay, 0.0)
     edges.append({
         "source": src,
         "target": tgt,
         "features": features,
-        "weight": float(row["Days for shipping (real)"]),
+        "weight": delay,
         "mode": physical_mode,   # raw physical mode kept as field
         "category": row["Category Name"],
         "cross_border": cross_border,

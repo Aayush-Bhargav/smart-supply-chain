@@ -122,7 +122,7 @@ data = data.to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=15)
-criterion = torch.nn.MSELoss()
+criterion = torch.nn.L1Loss()
 
 print(f"🚀 Training on {device}...")
 for epoch in range(1, 501):
@@ -133,6 +133,7 @@ for epoch in range(1, 501):
     t_attrs = data.edge_attr[train_idx]
     
     out = model(data.x, data.edge_index, t_attrs, t_edges)
+    out = torch.relu(out)
     loss = criterion(out, data.y[train_idx])
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
