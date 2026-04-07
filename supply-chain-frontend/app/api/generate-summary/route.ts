@@ -24,7 +24,8 @@ export async function POST(request: NextRequest) {
   try {
     const { route }: SummaryRequest = await request.json();
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" }, // Added -preview
+  { apiVersion: "v1beta" });
 
     // Construct the prompt
     const prompt = `Generate a route summary for the given route. 

@@ -6,6 +6,8 @@ export interface RouteRequest {
   priority_level: string;
   dispatch_date: string;
   scheduled_days: number | null;
+  delivery_type: string | null;
+  transit_hubs: string[];
 }
 
 export interface RouteSegment {

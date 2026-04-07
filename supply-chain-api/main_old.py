@@ -280,6 +280,11 @@ G = nx.MultiDiGraph()
 for node in nodes_data:
     G.add_node(node["node_id"], **node)
 
+# ============================================================
+# DELIVERY TYPE FILTERING graph
+# ============================================================
+
+
 edge_order = []
 for edge in edge_records:
     src = edge["source"]
@@ -323,9 +328,11 @@ class RouteRequest(BaseModel):
     target_city: str
     category_name: str
     quantity: float = 1.0
-    priority_level: Union[str, float] = "Standard Class"
+    priority_level: Optional[Union[str, float]] = "Standard Class"
     dispatch_date: str
     scheduled_days: Optional[float] = None
+    delivery_type: Optional[str] = None
+    transit_hubs: Optional[list] = []
 
 @app.get("/")
 def health_check():
@@ -384,14 +391,37 @@ def build_request_edge_features(query: RouteRequest):
 
     return dt, modified
 
+
+def is_edge_allowed(edge_data, delivery_type):
+    mode = edge_data["mode"]
+
+    if delivery_type == "Only Air":
+        return mode == "Air"
+    if delivery_type == "Only Ocean":
+        return mode == "Ocean"
+    if delivery_type == "Only Truck":
+        return mode == "Truck"
+    if delivery_type == "No Air":
+        return mode != "Air"
+    if delivery_type == "No Ocean":
+        return mode != "Ocean"
+
+    return True
+
 @app.post("/find_route")
 def find_route(query: RouteRequest):
     if query.source_city not in city_to_id or query.target_city not in city_to_id:
         raise HTTPException(status_code=404, detail="Source or destination city not found.")
-
+    print(query)
+    hub_ids = []
+    if query.transit_hubs:
+        for hub in query.transit_hubs:
+            if hub not in city_to_id:
+                raise HTTPException(status_code=404, detail=f"Transit hub {hub} not found.")
+            hub_ids.append(city_to_id[hub])
     src_id = city_to_id[query.source_city]
     tgt_id = city_to_id[query.target_city]
-
+    waypoints = [src_id] + hub_ids + [tgt_id]
     dt, modified_features = build_request_edge_features(query)
     new_edge_attr = torch.tensor(edge_scaler.transform(modified_features), dtype=torch.float)
 
@@ -421,7 +451,33 @@ def find_route(query: RouteRequest):
         G[u][v][k]["weight"] = final_time
 
     try:
-        path_nodes = nx.shortest_path(G, source=src_id, target=tgt_id, weight="weight")
+        G_filtered = nx.MultiDiGraph()
+
+        for u, v, k in G.edges(keys=True):
+            edge_data = G[u][v][k]
+
+            if is_edge_allowed(edge_data, query.delivery_type):
+                G_filtered.add_edge(u, v, key=k, **edge_data)
+
+        # also add nodes
+        G_filtered.add_nodes_from(G.nodes(data=True))
+        full_path = []
+
+        for i in range(len(waypoints) - 1):
+            segment_path = nx.shortest_path(
+                G_filtered,
+                source=waypoints[i],
+                target=waypoints[i + 1],
+                weight="weight"
+            )
+
+            # Avoid duplicating nodes when stitching
+            if i > 0:
+                segment_path = segment_path[1:]
+
+            full_path.extend(segment_path)
+
+        path_nodes = full_path
 
         route_details = []
         total_time = 0.0
