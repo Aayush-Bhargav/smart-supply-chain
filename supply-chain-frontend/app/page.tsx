@@ -2,20 +2,71 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { MapPin, Package, Clock, Calendar, TrendingUp, Loader2 } from 'lucide-react';
+import { MapPin, Package, Clock, Calendar, TrendingUp, Loader2, Truck } from 'lucide-react';
 import { RouteRequest, RouteResponse } from '@/types/route';
+import CityAutocomplete from '@/components/CityAutocomplete';
+import TransitHubs from '@/components/TransitHubs';
 
 const CATEGORIES = [
-  "Men's Clothing",
-  "Women's Clothing", 
+  "Accessories",
+  "As Seen on TV!",
+  "Baby",
+  "Baseball & Softball",
+  "Basketball",
+  "Books",
+  "Boxing & MMA",
+  "CDs",
+  "Cameras",
+  "Camping & Hiking",
+  "Cardio Equipment",
+  "Children's Clothing",
+  "Cleats",
+  "Computers",
+  "Consumer Electronics",
+  "Crafts",
+  "DVDs",
   "Electronics",
-  "Home & Garden",
-  "Sports & Outdoors",
-  "Books & Media",
-  "Toys & Games",
-  "Health & Beauty",
-  "Food & Beverages",
-  "Automotive"
+  "Fishing",
+  "Fitness Accessories",
+  "Garden",
+  "Girls' Apparel",
+  "Golf Apparel",
+  "Golf Bags & Carts",
+  "Golf Balls",
+  "Golf Gloves",
+  "Golf Shoes",
+  "Health and Beauty",
+  "Hockey",
+  "Hunting & Shooting",
+  "Indoor/Outdoor Games",
+  "Kids' Golf Clubs",
+  "Lacrosse",
+  "Men's Clothing",
+  "Men's Footwear",
+  "Men's Golf Clubs",
+  "Music",
+  "Pet Supplies",
+  "Shop By Sport",
+  "Soccer",
+  "Sporting Goods",
+  "Strength Training",
+  "Tennis & Racquet",
+  "Toys",
+  "Trade-In",
+  "Video Games",
+  "Water Sports",
+  "Women's Apparel",
+  "Women's Clothing",
+  "Women's Golf Clubs"
+];
+
+const DELIVERY_TYPES = [
+  { value: "Only Ocean", label: "Only Ocean" },
+  { value: "Only Air", label: "Only Air" },
+  { value: "Only Truck", label: "Only Truck" },
+  { value: "No Air", label: "No Air" },
+  { value: "No Ocean", label: "No Ocean" },
+  { value: "None", label: "None" },
 ];
 
 const PRIORITY_LEVELS = [
@@ -30,11 +81,13 @@ export default function Home() {
   const [formData, setFormData] = useState<RouteRequest>({
     source_city: '',
     target_city: '',
-    category_name: CATEGORIES[0],
+    category_name: CATEGORIES[0], // Now uses "Accessories" as first category
     quantity: 1,
     priority_level: "Standard Class",
     dispatch_date: new Date().toISOString().slice(0, 16),
     scheduled_days: null,
+    delivery_type: "None",
+    transit_hubs: [],
   });
 
   const [loading, setLoading] = useState(false);
@@ -104,33 +157,19 @@ export default function Home() {
               <form onSubmit={handleSubmit} className="form-section">
                 {/* Source City */}
                 <div>
-                  <label className="form-label">
-                    <MapPin className="inline w-5 h-5 mr-2 text-blue-600" />
-                    Source City
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    className="input-field"
-                    placeholder="e.g., New York"
+                  <CityAutocomplete
                     value={formData.source_city}
-                    onChange={(e) => handleInputChange('source_city', e.target.value)}
+                    onChange={(value) => handleInputChange('source_city', value)}
+                    placeholder="e.g., New York"
                   />
                 </div>
 
                 {/* Target City */}
                 <div>
-                  <label className="form-label">
-                    <MapPin className="inline w-5 h-5 mr-2 text-blue-600" />
-                    Target City
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    className="input-field"
-                    placeholder="e.g., Los Angeles"
+                  <CityAutocomplete
                     value={formData.target_city}
-                    onChange={(e) => handleInputChange('target_city', e.target.value)}
+                    onChange={(value) => handleInputChange('target_city', value)}
+                    placeholder="e.g., Los Angeles"
                   />
                 </div>
 
@@ -170,23 +209,31 @@ export default function Home() {
                     />
                   </div>
 
+                  
+
                   <div>
                     <label className="form-label">
-                      <TrendingUp className="inline w-5 h-5 mr-2 text-blue-600" />
-                      Priority Level
+                      <Truck className="inline w-5 h-5 mr-2 text-blue-600" />
+                      Delivery Type
                     </label>
                     <select
                       className="input-field"
-                      value={formData.priority_level}
-                      onChange={(e) => handleInputChange('priority_level', e.target.value)}
+                      value={formData.delivery_type}
+                      onChange={(e) => handleInputChange('delivery_type', e.target.value)}
                     >
-                      {PRIORITY_LEVELS.map(priority => (
-                        <option key={priority.value} value={priority.value}>
-                          {priority.label}
+                      {DELIVERY_TYPES.map(deliveryType => (
+                        <option key={deliveryType.value} value={deliveryType.value}>
+                          {deliveryType.label}
                         </option>
                       ))}
                     </select>
                   </div>
+
+                  {/* Transit Hubs */}
+                  <TransitHubs
+                    value={formData.transit_hubs}
+                    onChange={(hubs) => handleInputChange('transit_hubs', hubs)}
+                  />
                 </div>
 
                 {/* Dispatch Date */}
@@ -212,7 +259,11 @@ export default function Home() {
                 >
                   {loading ? (
                     <>
-                      <Loader2 className="w-6 h-6 mr-3 animate-spin" />
+                      <img 
+                        src="https://true2thecode.com/cdn/shop/products/truck-cbec39e7ac0d42a6e1cf001e6c9c4978.gif?crop=center&height=500&v=1574017682&width=600"
+                        alt="Loading truck..."
+                        className="w-8 h-8 mr-3"
+                      />
                       Finding Optimal Route<span className="loading-dots"></span>
                     </>
                   ) : (
