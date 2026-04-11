@@ -1,138 +1,127 @@
-import json
+# import json
 import math
 import os
+import re
+import time
 from datetime import datetime
 from typing import Optional, Union
 
 import joblib
+import json
 import networkx as nx
 import numpy as np
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from torch.nn import Linear, Sequential, ReLU, Dropout, BatchNorm1d, LayerNorm
 from torch_geometric.nn import SAGEConv
+from itertools import islice, product
+
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+from risk_engine import assess_route_risk
+
+load_dotenv()
 
 print("🚀 Waking up Supply Chain Route API...")
 
 # ============================================================
 # ENVIRONMENT CONFIGURATION
 # ============================================================
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-PORT = int(os.getenv("PORT", 8080))
-
-# CORS Configuration - Allow multiple frontends
+ENVIRONMENT     = os.getenv("ENVIRONMENT", "development")
+GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
+PORT            = int(os.getenv("PORT", 8080))
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",") if os.getenv("ALLOWED_ORIGINS") else ["*"]
+
+# ── Single Gemini client for the decision endpoint ──
+# risk_engine.py has its OWN genai.configure() + risk_model instance.
+# This client is only for /select_best_route.
+genai.configure(api_key=GEMINI_API_KEY)
+decision_model = genai.GenerativeModel("gemini-2.5-flash")
+
+# ── Global risk cache ──
+# { "City Name": {"data": risk_dict, "timestamp": float} }
+RISK_CACHE        = {}
+CACHE_TTL_SECONDS = 1800  # 30 minutes
 
 # ============================================================
 # FILES
 # ============================================================
-INFER_NODES_FILE = "nodes_inference.json"
-INFER_EDGES_FILE = "edges_inference.json"
+INFER_NODES_FILE     = "nodes_inference.json"
+INFER_EDGES_FILE     = "edges_inference.json"
 CATEGORY_MAPPING_FILE = "category_mapping.json"
-FEATURE_SCHEMA_FILE = "feature_schema.json"
+FEATURE_SCHEMA_FILE  = "feature_schema.json"
 
-MODEL_FILE = "supply_chain_model.pth"
+MODEL_FILE       = "supply_chain_model.pth.zip"
 NODE_SCALER_FILE = "node_scaler.pkl"
 EDGE_SCALER_FILE = "edge_scaler.pkl"
 
 # ============================================================
-# FEATURE LAYOUT
-# Must match pipeline.py exactly
+# FEATURE LAYOUT  (must match pipeline.py exactly)
 # [distance, cross_border, month_sin, month_cos, day_sin, day_cos,
 #  hour_sin, hour_cos, scheduled_days, preference, quantity,
 #  physical_mode, category_one_hot...]
 # ============================================================
-DIST_IDX = 0
-CROSS_BORDER_IDX = 1
-MONTH_SIN_IDX = 2
-MONTH_COS_IDX = 3
-DAY_SIN_IDX = 4
-DAY_COS_IDX = 5
-HOUR_SIN_IDX = 6
-HOUR_COS_IDX = 7
+DIST_IDX          = 0
+CROSS_BORDER_IDX  = 1
+MONTH_SIN_IDX     = 2
+MONTH_COS_IDX     = 3
+DAY_SIN_IDX       = 4
+DAY_COS_IDX       = 5
+HOUR_SIN_IDX      = 6
+HOUR_COS_IDX      = 7
 SCHEDULED_DAYS_IDX = 8
-PREFERENCE_IDX = 9
-QUANTITY_IDX = 10
+PREFERENCE_IDX    = 9
+QUANTITY_IDX      = 10
 PHYSICAL_MODE_IDX = 11
 CATEGORY_START_IDX = 12
 
-PHYSICAL_MODE_TO_IDX = {
-    "Truck": 0.0,
-    "Air": 1.0,
-    "Ocean": 2.0,
-}
+PHYSICAL_MODE_TO_IDX = {"Truck": 0.0, "Air": 1.0, "Ocean": 2.0}
 
 PRIORITY_TO_ENCODING = {
-    "Standard Class": 0.0,
-    "Second Class": 1.0,
-    "First Class": 2.0,
-    "Same Day": 3.0,
-    "Standard": 0.0,
-    "Second": 1.0,
-    "First": 2.0,
-    "Urgent": 3.0,
+    "Standard Class": 0.0, "Second Class": 1.0,
+    "First Class": 2.0,    "Same Day": 3.0,
+    "Standard": 0.0,       "Second": 1.0,
+    "First": 2.0,          "Urgent": 3.0,
 }
 
-PRIORITY_TO_SCHEDULED_DAYS = {
-    0.0: 4.0,
-    1.0: 3.0,
-    2.0: 2.0,
-    3.0: 0.0,
-}
+PRIORITY_TO_SCHEDULED_DAYS = {0.0: 4.0, 1.0: 3.0, 2.0: 2.0, 3.0: 0.0}
 
 # ============================================================
-# MODEL
+# MODEL DEFINITION
 # ============================================================
 class RobustSupplyChainSAGE(torch.nn.Module):
     def __init__(self, node_in_dim, edge_in_dim, hidden_dim, num_layers=3, dropout=0.2):
-        super(RobustSupplyChainSAGE, self).__init__()
-        
-        # Maps node features [3] -> [hidden_dim]
+        super().__init__()
         self.node_encoder = Linear(node_in_dim, hidden_dim)
-        
-        self.convs = torch.nn.ModuleList()
-        self.norms = torch.nn.ModuleList()
-        
+        self.convs  = torch.nn.ModuleList()
+        self.norms  = torch.nn.ModuleList()
         for _ in range(num_layers):
-            # Aggregation: capturing mean and max behavior of neighboring supply hubs
-            self.convs.append(SAGEConv(hidden_dim, hidden_dim, aggr=['mean', 'max']))
+            self.convs.append(SAGEConv(hidden_dim, hidden_dim, aggr=["mean", "max"]))
             self.norms.append(LayerNorm(hidden_dim))
-            
         self.dropout = Dropout(dropout)
-        
-        # Prediction Head: (Source Node + Target Node + Edge Features)
-        # Dim: (hidden_dim * 2) + edge_in_dim
         concat_dim = (hidden_dim * 2) + edge_in_dim
         self.edge_predictor = Sequential(
             Linear(concat_dim, hidden_dim * 2),
-            BatchNorm1d(hidden_dim * 2),
-            ReLU(),
-            self.dropout,
-            Linear(hidden_dim * 2, hidden_dim),
-            ReLU(),
-            Linear(hidden_dim, 1) # Predicts weight (transit time)
+            BatchNorm1d(hidden_dim * 2), ReLU(), self.dropout,
+            Linear(hidden_dim * 2, hidden_dim), ReLU(),
+            Linear(hidden_dim, 1),
         )
 
     def forward(self, x, edge_index, edge_attr, query_edge_indices):
         h = self.node_encoder(x)
-        
         for i, conv in enumerate(self.convs):
             h_res = h
             h = conv(h, edge_index)
             h = self.norms[i](h)
             h = ReLU()(h)
             h = self.dropout(h)
-            h = h + h_res 
-            
-        # Select embeddings for the specific edges we are predicting
+            h = h + h_res
         src_idx, tgt_idx = query_edge_indices[0], query_edge_indices[1]
-        h_src, h_tgt = h[src_idx], h[tgt_idx]
-        
-        # Final concatenation for regression
-        edge_inputs = torch.cat([h_src, h_tgt, edge_attr], dim=1)
+        edge_inputs = torch.cat([h[src_idx], h[tgt_idx], edge_attr], dim=1)
         return self.edge_predictor(edge_inputs)
 
 # ============================================================
@@ -141,18 +130,14 @@ class RobustSupplyChainSAGE(torch.nn.Module):
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def get_physics_baseline(dist_km, mode):
-    if mode == "Air":
-        return (dist_km / (800 * 24)) + 0.5
-    if mode == "Truck":
-        return (dist_km * 1.28) / (70 * 24) + 0.5
-    if mode == "Ocean":
-        return (dist_km / (35 * 24)) + 2.0
+    if mode == "Air":   return (dist_km / (800 * 24)) + 0.5
+    if mode == "Truck": return (dist_km * 1.28) / (70 * 24) + 0.5
+    if mode == "Ocean": return (dist_km / (35 * 24)) + 2.0
     return 999.0
 
 def parse_dispatch_datetime(value: str) -> datetime:
@@ -184,6 +169,26 @@ def infer_scheduled_days(priority_encoded: float, scheduled_days: Optional[float
         return float(scheduled_days)
     return float(PRIORITY_TO_SCHEDULED_DAYS.get(float(priority_encoded), 4.0))
 
+def normalize_city(city: str) -> str:
+    """Consistent casing so cache lookups never miss due to case differences."""
+    return city.strip().title()
+
+def gemini_decision_with_retry(prompt: str, generation_config, max_retries: int = 2):
+    """Retry helper for the /select_best_route Gemini call."""
+    for attempt in range(max_retries + 1):
+        try:
+            return decision_model.generate_content(prompt, generation_config=generation_config)
+        except Exception as e:
+            err_str = str(e)
+            match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', err_str)
+            wait = int(match.group(1)) + 2 if match else 45
+            if attempt < max_retries and ("429" in err_str or "quota" in err_str.lower()):
+                print(f"   ⏳ Gemini decision rate-limited. Waiting {wait}s "
+                      f"(attempt {attempt + 1}/{max_retries})...")
+                time.sleep(wait)
+            else:
+                raise
+
 # ============================================================
 # LOAD SCALERS, MAPPING, GRAPH
 # ============================================================
@@ -209,27 +214,33 @@ num_categories = len(category_to_idx)
 
 with open(INFER_NODES_FILE, "r", encoding="utf-8") as f:
     nodes_data = json.load(f)
-
 with open(INFER_EDGES_FILE, "r", encoding="utf-8") as f:
     edges_data = json.load(f)
 
 nodes_data.sort(key=lambda x: x["node_id"])
 
-# Continuous indices for PyG
-id_map = {node["node_id"]: i for i, node in enumerate(nodes_data)}
-rev_id_map = {i: node["node_id"] for i, node in enumerate(nodes_data)}
-id_to_city = {node["node_id"]: node["name"] for node in nodes_data}
-city_to_id = {node["name"]: node["node_id"] for node in nodes_data}
+id_map      = {node["node_id"]: i             for i, node in enumerate(nodes_data)}
+rev_id_map  = {i: node["node_id"]             for i, node in enumerate(nodes_data)}
+id_to_city  = {node["node_id"]: node["name"]  for node in nodes_data}
+city_to_id  = {node["name"]: node["node_id"]  for node in nodes_data}
+# ── Global city coordinates for map visualization ──
+city_to_coordinates = {
+    node["name"]: {
+        "lat": float(node["lat"]),
+        "lng": float(node["lon"])          # note: "lng" (standard for maps)
+    }
+    for node in nodes_data
+    if "lat" in node and "lon" in node
+}
+print(f"📍 Loaded coordinates for {len(city_to_coordinates)} cities")
 
-# Node tensors
-x_raw = [node["features"] for node in nodes_data]
+x_raw    = [node["features"] for node in nodes_data]
 x_scaled = node_scaler.transform(x_raw)
 x_tensor = torch.tensor(x_scaled, dtype=torch.float)
 
-# Edge tensors (structure only; dynamic context is injected per request)
-edge_index_list = []
-base_edge_features = []
-edge_records = []
+edge_index_list     = []
+base_edge_features  = []
+edge_records        = []
 
 for edge in edges_data:
     if edge["source"] in id_map and edge["target"] in id_map:
@@ -239,7 +250,6 @@ for edge in edges_data:
 
 edge_index_tensor = torch.tensor(edge_index_list, dtype=torch.long).t().contiguous()
 
-# Handle feature mismatch - check if we need to regenerate scalers
 try:
     edge_attr_scaled = edge_scaler.transform(base_edge_features)
     edge_attr_tensor = torch.tensor(edge_attr_scaled, dtype=torch.float)
@@ -247,59 +257,43 @@ try:
 except ValueError as e:
     print(f"⚠️ Scaler mismatch: {e}")
     print("🔄 Regenerating scalers with current data...")
-    
-    # Create new scalers with current data
     from sklearn.preprocessing import StandardScaler
-    edge_scaler = StandardScaler()
+    edge_scaler      = StandardScaler()
     edge_attr_scaled = edge_scaler.fit_transform(base_edge_features)
     edge_attr_tensor = torch.tensor(edge_attr_scaled, dtype=torch.float)
-    
-    # Save the updated scalers
     joblib.dump(edge_scaler, EDGE_SCALER_FILE)
     print(f"✅ Updated scalers saved. New edge features: {edge_attr_tensor.shape[1]}")
 
-# Model
 node_in_dim = x_tensor.shape[1]
 edge_in_dim = edge_attr_tensor.shape[1]
-model = RobustSupplyChainSAGE(node_in_dim, edge_in_dim, 128, 4)
+ml_model    = RobustSupplyChainSAGE(node_in_dim, edge_in_dim, 128, 4)
 
 try:
-    model.load_state_dict(torch.load(MODEL_FILE, map_location="cpu"))
+    ml_model.load_state_dict(torch.load(MODEL_FILE, map_location="cpu"))
     print(f"✅ Model loaded successfully. Node dim: {node_in_dim}, Edge dim: {edge_in_dim}")
 except RuntimeError as e:
     print(f"⚠️ Model architecture mismatch: {e}")
-    print("🔄 This is expected - the model will be retrained during deployment")
-    print("💡 For now, using uninitialized model (will work after training)")
-    
-model.eval()
+
+ml_model.eval()
 
 # ============================================================
-# NETWORKX ROUTER
+# BUILD NETWORKX GRAPH
 # ============================================================
 G = nx.MultiDiGraph()
 for node in nodes_data:
     G.add_node(node["node_id"], **node)
 
-# ============================================================
-# DELIVERY TYPE FILTERING graph
-# ============================================================
-
-
 edge_order = []
 for edge in edge_records:
-    src = edge["source"]
-    tgt = edge["target"]
-    src_country = edge["source_country"]
-    tgt_country = edge["target_country"]
-    mode = edge["mode"]
-    dist_km = edge.get("distance_km", edge["features"][0])
-
+    src      = edge["source"]
+    tgt      = edge["target"]
+    mode     = edge["mode"]
+    dist_km  = edge.get("distance_km", edge["features"][0])
     base_time = get_physics_baseline(dist_km, mode)
     key = G.add_edge(
-        src,
-        tgt,
-        source_country=src_country,
-        target_country=tgt_country,
+        src, tgt,
+        source_country=edge["source_country"],
+        target_country=edge["target_country"],
         weight=base_time,
         base_time=base_time,
         mode=mode,
@@ -323,70 +317,88 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============================================================
+# Pydantic Models (add/replace these)
+# ============================================================
 class RouteRequest(BaseModel):
-    source_city: str
-    target_city: str
-    category_name: str
-    quantity: float = 1.0
-    priority_level: Optional[Union[str, float]] = "Standard Class"
-    dispatch_date: str
-    scheduled_days: Optional[float] = None
-    delivery_type: Optional[str] = None
-    transit_hubs: Optional[list] = []
+    source_city:          str
+    target_city:          str
+    category_name:        str
+    quantity:             float = 1.0
+    priority_level:       Optional[Union[str, float]] = "Standard Class"
+    dispatch_date:        str
+    scheduled_days:       Optional[float] = None
+    delivery_type:        Optional[str] = None
+    transit_hubs:         Optional[list[str]] = []          # ← already existed
+    mock_disruption_city: Optional[str] = None
+    mock_disruption_type: Optional[str] = None
 
-@app.get("/")
-def health_check():
-    return {
-        "status": "live",
-        "nodes": G.number_of_nodes(),
-        "edges": G.number_of_edges(),
-        "categories": num_categories,
-    }
 
+class RecommendedRoute(BaseModel):                          # ← NEW helper model
+    option:               int
+    total_transit_days:   float
+    route_risk_level:     float
+    route:                list[dict]
+    forced_through_hubs:  bool = False          # ← NEW
+    has_high_risk_hub:    bool = False          # ← NEW
+
+
+class RouteResponse(BaseModel):                             # ← NEW (optional but clean)
+    source:               str
+    target:               str
+    category_name:        str
+    quantity:             float
+    delivery_type:        Optional[str]
+    transit_hubs:         list[str]
+    dispatch_date:        str
+    priority_level:       str
+    recommended_routes:   list[RecommendedRoute]
+    node_risks:           dict
+
+class GeminiDecisionOutput(BaseModel):
+    recommended_option: int   = Field(description="Option number (1, 2, or 3) that is recommended.")
+    executive_summary:  str   = Field(description="2-3 sentence explanation of WHY this route was chosen.")
+    trade_offs:         list[str] = Field(description="2-3 bullet points comparing time vs risk trade-offs.")
+
+class DecisionRequest(BaseModel):
+    priority_level: str
+    routes:         list
+    node_risks:     dict
+
+# ============================================================
+# ROUTE BUILDING HELPERS
+# ============================================================
 def build_request_edge_features(query: RouteRequest):
     dt = parse_dispatch_datetime(query.dispatch_date)
 
-    month_sin = float(np.sin(2 * np.pi * dt.month / 12.0))
-    month_cos = float(np.cos(2 * np.pi * dt.month / 12.0))
-    day_sin = float(np.sin(2 * np.pi * dt.weekday() / 7.0))
-    day_cos = float(np.cos(2 * np.pi * dt.weekday() / 7.0))
-    hour_sin = float(np.sin(2 * np.pi * dt.hour / 24.0))
-    hour_cos = float(np.cos(2 * np.pi * dt.hour / 24.0))
+    month_sin = float(np.sin(2 * np.pi * dt.month    / 12.0))
+    month_cos = float(np.cos(2 * np.pi * dt.month    / 12.0))
+    day_sin   = float(np.sin(2 * np.pi * dt.weekday()/ 7.0))
+    day_cos   = float(np.cos(2 * np.pi * dt.weekday()/ 7.0))
+    hour_sin  = float(np.sin(2 * np.pi * dt.hour     / 24.0))
+    hour_cos  = float(np.cos(2 * np.pi * dt.hour     / 24.0))
 
     preference_encoded = encode_priority(query.priority_level)
-    scheduled_days = infer_scheduled_days(preference_encoded, query.scheduled_days)
-    category_vec = one_hot_category(query.category_name, category_to_idx, num_categories)
+    scheduled_days     = infer_scheduled_days(preference_encoded, query.scheduled_days)
+    category_vec       = one_hot_category(query.category_name, category_to_idx, num_categories)
 
     modified = []
     for edge in edge_records:
         feat = list(edge["features"])
-
-        # Same order as training:
-        # 0 dist
-        # 1 cross_border
-        # 2-7 date/time
-        # 8 scheduled_days
-        # 9 preference
-        # 10 quantity
-        # 11 physical_mode_encoded
-        # 12+ category one-hot
-        feat[DIST_IDX] = float(feat[DIST_IDX])
-        feat[CROSS_BORDER_IDX] = float(feat[CROSS_BORDER_IDX])
-        feat[MONTH_SIN_IDX] = month_sin
-        feat[MONTH_COS_IDX] = month_cos
-        feat[DAY_SIN_IDX] = day_sin
-        feat[DAY_COS_IDX] = day_cos
-        feat[HOUR_SIN_IDX] = hour_sin
-        feat[HOUR_COS_IDX] = hour_cos
+        feat[DIST_IDX]          = float(feat[DIST_IDX])
+        feat[CROSS_BORDER_IDX]  = float(feat[CROSS_BORDER_IDX])
+        feat[MONTH_SIN_IDX]     = month_sin
+        feat[MONTH_COS_IDX]     = month_cos
+        feat[DAY_SIN_IDX]       = day_sin
+        feat[DAY_COS_IDX]       = day_cos
+        feat[HOUR_SIN_IDX]      = hour_sin
+        feat[HOUR_COS_IDX]      = hour_cos
         feat[SCHEDULED_DAYS_IDX] = scheduled_days
-        feat[PREFERENCE_IDX] = float(preference_encoded)
-        feat[QUANTITY_IDX] = float(query.quantity)
+        feat[PREFERENCE_IDX]    = float(preference_encoded)
+        feat[QUANTITY_IDX]      = float(query.quantity)
         feat[PHYSICAL_MODE_IDX] = float(PHYSICAL_MODE_TO_IDX.get(edge["mode"], 1.0))
-
-        # category one-hot
         if len(feat) > CATEGORY_START_IDX:
             feat[CATEGORY_START_IDX:] = category_vec
-
         modified.append(feat)
 
     return dt, modified
@@ -394,125 +406,304 @@ def build_request_edge_features(query: RouteRequest):
 
 def is_edge_allowed(edge_data, delivery_type):
     mode = edge_data["mode"]
-
-    if delivery_type == "Only Air":
-        return mode == "Air"
-    if delivery_type == "Only Ocean":
-        return mode == "Ocean"
-    if delivery_type == "Only Truck":
-        return mode == "Truck"
-    if delivery_type == "No Air":
-        return mode != "Air"
-    if delivery_type == "No Ocean":
-        return mode != "Ocean"
-
+    if delivery_type == "Only Air":   return mode == "Air"
+    if delivery_type == "Only Ocean": return mode == "Ocean"
+    if delivery_type == "Only Truck": return mode == "Truck"
+    if delivery_type == "No Air":     return mode != "Air"
+    if delivery_type == "No Ocean":   return mode != "Ocean"
     return True
+
+# ============================================================
+# ENDPOINTS
+# ============================================================
+@app.get("/")
+def health_check():
+    return {
+        "status":     "live",
+        "nodes":      G.number_of_nodes(),
+        "edges":      G.number_of_edges(),
+        "categories": num_categories,
+    }
+
 
 @app.post("/find_route")
 def find_route(query: RouteRequest):
-    if query.source_city not in city_to_id or query.target_city not in city_to_id:
-        raise HTTPException(status_code=404, detail="Source or destination city not found.")
-    print(query)
+    # ── Validate cities ──
+    if query.source_city not in city_to_id:
+        raise HTTPException(status_code=404, detail=f"Source city '{query.source_city}' not found.")
+    if query.target_city not in city_to_id:
+        raise HTTPException(status_code=404, detail=f"Destination city '{query.target_city}' not found.")
+
+    # ── Validate transit hubs (raise 400 instead of silently dropping) ──
     hub_ids = []
-    if query.transit_hubs:
-        for hub in query.transit_hubs:
-            if hub not in city_to_id:
-                raise HTTPException(status_code=404, detail=f"Transit hub {hub} not found.")
-            hub_ids.append(city_to_id[hub])
-    src_id = city_to_id[query.source_city]
-    tgt_id = city_to_id[query.target_city]
+    for hub in (query.transit_hubs or []):
+        if hub not in city_to_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Transit hub '{hub}' was not found in the routing graph. "
+                       "Please check the city name and try again."
+            )
+        hub_ids.append(city_to_id[hub])
+
+    src_id    = city_to_id[query.source_city]
+    tgt_id    = city_to_id[query.target_city]
     waypoints = [src_id] + hub_ids + [tgt_id]
+
+    # ── PASS 1: ML baseline ──
     dt, modified_features = build_request_edge_features(query)
     new_edge_attr = torch.tensor(edge_scaler.transform(modified_features), dtype=torch.float)
 
     with torch.no_grad():
-        predictions = model(
-            x_tensor,
-            edge_index_tensor,
-            new_edge_attr,
-            edge_index_tensor,
+        predictions = ml_model(
+            x_tensor, edge_index_tensor, new_edge_attr, edge_index_tensor
         ).view(-1).cpu().numpy()
 
-    # Update weights on the NetworkX graph
     for idx, (u, v, k) in enumerate(edge_order):
-        edge_data = G[u][v][k]
-        delay = float(predictions[idx])
-        delay=max(0.0,delay)
-        physics_time = edge_data["base_time"]
-        final_time = physics_time + delay
+        edge_data             = G[u][v][k]
+        predicted_total_time  = max(0.1, float(predictions[idx]))
+
+        # Penalise cross-border edges that are not needed for a domestic shipment
         if edge_data["source_country"] != edge_data["target_country"]:
-    # if both source and final destination are same country
-            if id_to_city[src_id] and id_to_city[tgt_id]:
-                src_country = nodes_data[id_map[src_id]]["country"]
-                tgt_country = nodes_data[id_map[tgt_id]]["country"]
+            if nodes_data[id_map[src_id]]["country"] == nodes_data[id_map[tgt_id]]["country"]:
+                predicted_total_time *= 1000
 
-                if src_country == tgt_country:
-                    final_time *= 1000   # strong penalty
-        G[u][v][k]["weight"] = final_time
+        G[u][v][k]["weight"] = predicted_total_time
 
+    # ── PASS 2: Filter graph by delivery type ──
+    G_filtered = nx.MultiDiGraph()
+    for u, v, k in G.edges(keys=True):
+        if is_edge_allowed(G[u][v][k], query.delivery_type):
+            G_filtered.add_edge(u, v, key=k, **G[u][v][k])
+    G_filtered.add_nodes_from(G.nodes(data=True))
+
+    # Flatten to simple DiGraph (keep fastest mode per pair) for path search
+    G_simple = nx.DiGraph()
+    for u, v, k, data in G_filtered.edges(keys=True, data=True):
+        w = data["weight"]
+        if G_simple.has_edge(u, v):
+            if w < G_simple[u][v]["weight"]:
+                G_simple[u][v]["weight"] = w
+        else:
+            G_simple.add_edge(u, v, weight=w)
+
+    # ── Generate top-10 candidate paths per leg ──
     try:
-        G_filtered = nx.MultiDiGraph()
-
-        for u, v, k in G.edges(keys=True):
-            edge_data = G[u][v][k]
-
-            if is_edge_allowed(edge_data, query.delivery_type):
-                G_filtered.add_edge(u, v, key=k, **edge_data)
-
-        # also add nodes
-        G_filtered.add_nodes_from(G.nodes(data=True))
-        full_path = []
-
+        segment_options = []
         for i in range(len(waypoints) - 1):
-            segment_path = nx.shortest_path(
-                G_filtered,
-                source=waypoints[i],
-                target=waypoints[i + 1],
-                weight="weight"
+            paths_gen = nx.shortest_simple_paths(
+                G_simple, source=waypoints[i], target=waypoints[i + 1], weight="weight"
             )
+            segment_options.append(list(islice(paths_gen, 10)))
+        all_combinations = list(product(*segment_options))
+    except nx.NetworkXNoPath:
+        raise HTTPException(status_code=404, detail="No compliant baseline route exists.")
 
-            # Avoid duplicating nodes when stitching
-            if i > 0:
-                segment_path = segment_path[1:]
+        # ── Collect unique cities needed across all candidate paths ──
+    unique_city_ids = set()
+    for combo in all_combinations:
+        for leg in combo:
+            unique_city_ids.update(leg)
 
-            full_path.extend(segment_path)
+    unique_city_names = [normalize_city(id_to_city[nid]) for nid in unique_city_ids]
 
-        path_nodes = full_path
+    print("\n" + "🔍" * 20)
+    print(f"[DEBUG] Unique cities in route: {unique_city_names}")
+    print(f"[DEBUG] Incoming mock_disruption_city from frontend: '{query.mock_disruption_city}'")
+    print(f"[DEBUG] Incoming mock_disruption_type from frontend: '{query.mock_disruption_type}'")
 
-        route_details = []
-        total_time = 0.0
+    # Resolve mock city exactly as stored in graph
+    mock_disruption_city_resolved = None
+    if query.mock_disruption_city:
+        mock_input = normalize_city(query.mock_disruption_city)
+        if mock_input in city_to_id:
+            mock_disruption_city_resolved = mock_input
+            print(f"✅ Mock city EXACT match: '{mock_input}'")
+        else:
+            print(f"❌ Mock city '{mock_input}' NOT found in city_to_id!")
 
-        for i in range(len(path_nodes) - 1):
-            u = path_nodes[i]
-            v = path_nodes[i + 1]
+    current_time = time.time()
+    cities_to_fetch = []
+    node_risks = {}
 
-            edge_options = G[u][v]
-            best_key = min(edge_options, key=lambda kk: edge_options[kk]["weight"])
-            best_edge = edge_options[best_key]
+    for city in unique_city_names:
+        if mock_disruption_city_resolved and city == mock_disruption_city_resolved:
+            print(f"🔄 Forcing re-fetch + chaos for: {city}")
+            cities_to_fetch.append(city)
+        elif city in RISK_CACHE and (current_time - RISK_CACHE[city]["timestamp"]) < CACHE_TTL_SECONDS:
+            node_risks[city] = RISK_CACHE[city]["data"]
+        else:
+            cities_to_fetch.append(city)
 
-            total_time += best_edge["weight"]
-            route_details.append({
-                "from": id_to_city[u],
-                "to": id_to_city[v],
-                "mode": best_edge["mode"],
-                "days": round(float(best_edge["weight"]), 2),
-                "base_time": round(float(best_edge["base_time"]), 2),
+    print(f"🌍 Cities that will be fetched now: {cities_to_fetch}")
+
+    if cities_to_fetch:
+        print("🚀 Calling assess_route_risk with chaos...")
+        fresh_risks = assess_route_risk(
+            cities_to_fetch,
+            mock_disruption_city=mock_disruption_city_resolved,
+            mock_disruption_type=query.mock_disruption_type,
+        )
+
+        for city, risk_data in fresh_risks.items():
+            if city != mock_disruption_city_resolved:
+                RISK_CACHE[city] = {"data": risk_data, "timestamp": current_time}
+            node_risks[city] = risk_data
+
+        # Extra debug
+        if mock_disruption_city_resolved and mock_disruption_city_resolved in node_risks:
+            print(f"🎯 Final node_risk for mock city → {mock_disruption_city_resolved}: {node_risks[mock_disruption_city_resolved]}")
+        else:
+            print(f"❌ mock city '{mock_disruption_city_resolved}' missing from final node_risks!")
+
+    # ... rest of your function (scored_combinations, top_3, return) stays exactly the same
+
+        # ── Score all candidate combinations ──
+    RISK_PENALTY_MULTIPLIER = 10.0
+    scored_combinations = []
+    has_forced_hubs = bool(query.transit_hubs)
+
+    for combo in all_combinations:
+        total_time        = 0.0
+        max_route_risk    = 0.0
+        route_details     = []
+        blocked           = False
+        hub_forced_high_risk = False
+
+        for leg_path in combo:
+            if blocked:
+                break
+
+            for i in range(len(leg_path) - 1):
+                u = leg_path[i]
+                v = leg_path[i + 1]
+
+                city_u = normalize_city(id_to_city[u])
+                city_v = normalize_city(id_to_city[v])
+                risk_u = node_risks.get(city_u, {}).get("risk", 0.0)
+                risk_v = node_risks.get(city_v, {}).get("risk", 0.0)
+
+                edge_risk   = max(risk_u, risk_v)
+                reason_u    = node_risks.get(city_u, {}).get("reason", "Normal")
+                reason_v    = node_risks.get(city_v, {}).get("reason", "Normal")
+                edge_reason = reason_u if risk_u >= risk_v else reason_v
+
+                # ── FIXED LOGIC ──
+                # Transit hubs are now sacred — never hard-block them
+                if edge_risk >= 0.8:
+                    if not has_forced_hubs:
+                        blocked = True
+                        break
+                    else:
+                        hub_forced_high_risk = True
+
+                # Best edge (mode) between these two cities
+                edge_options = G_filtered[u][v]
+                best_key     = min(edge_options, key=lambda kk: edge_options[kk]["weight"])
+                best_edge    = edge_options[best_key]
+
+                leg_time = best_edge["weight"] + (edge_risk * RISK_PENALTY_MULTIPLIER)
+                total_time += leg_time
+
+                if edge_risk > max_route_risk:
+                    max_route_risk = edge_risk
+
+                if not (route_details and route_details[-1]["to"] == id_to_city[v]):
+                    route_details.append({
+                        "from":        id_to_city[u],
+                        "to":          id_to_city[v],
+                        "mode":        best_edge["mode"],
+                        "days":        round(float(leg_time), 2),
+                        "base_time":   round(float(best_edge["base_time"]), 2),
+                        "risk_score":  round(edge_risk, 2),
+                        "risk_reason": edge_reason,
+                    })
+
+        if not blocked:
+            scored_combinations.append({
+                "total_transit_days": round(float(total_time), 2),
+                "route_risk_level":   round(max_route_risk, 2),
+                "route":              route_details,
+                "forced_through_hubs": has_forced_hubs,
+                "has_high_risk_hub":   hub_forced_high_risk,
             })
 
+    if not scored_combinations:
+        raise HTTPException(
+            status_code=404,
+            detail="No compliant route exists even after forcing your transit hubs."
+        )
+
+    scored_combinations.sort(key=lambda x: x["total_transit_days"])
+    top_3 = scored_combinations[:3]
+    for i, route in enumerate(top_3):
+        route["option"] = i + 1
+
+    # ── Final response (now type-safe and UI-friendly) ──
+        # ── Final response (now includes coordinates for the map) ──
+    return {
+        "source":             query.source_city,
+        "target":             query.target_city,
+        "category_name":      query.category_name,
+        "quantity":           float(query.quantity),
+        "delivery_type":      query.delivery_type or "None",
+        "transit_hubs":       query.transit_hubs or [],
+        "dispatch_date":      dt.isoformat(),
+        "priority_level":     query.priority_level,
+        "recommended_routes": top_3,
+        "node_risks":         node_risks,
+        "city_coordinates":   city_to_coordinates,      # ← NEW
+    }
+
+@app.post("/select_best_route")
+def select_best_route(req: DecisionRequest):
+    print("🤖 Gemini is analyzing the route options...")
+
+    prompt = f"""
+    You are a Chief Supply Chain Officer AI. Analyze these {len(req.routes)} route options
+    and recommend the best one.
+
+    CONTEXT:
+    - Customer Priority Level: {req.priority_level}
+      (If 'Same Day' or 'First Class', time is critical. If 'Standard', safety is more important.)
+
+    THE OPTIONS:
+    {json.dumps(req.routes, indent=2)}
+
+    CURRENT GLOBAL RISKS:
+    {json.dumps(req.node_risks, indent=2)}
+
+    INSTRUCTIONS:
+    1. Weigh total_transit_days against route_risk_level.
+    2. High priority → tolerate slightly more risk for speed.
+       Low priority  → choose the safest route.
+    3. Return ONLY a JSON object matching the required schema.
+    """
+
+    print(f"🚨 API CALL [GEMINI - DECISION]: model={decision_model.model_name}")
+    try:
+        response = gemini_decision_with_retry(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=GeminiDecisionOutput,
+            ),
+        )
+        return json.loads(response.text)
+
+    except Exception as e:
+        print(f"⚠️ Gemini Decision Error (all retries exhausted): {e}")
         return {
-            "source": query.source_city,
-            "target": query.target_city,
-            "dispatch_date": dt.isoformat(),
-            "category_name": query.category_name,
-            "quantity": query.quantity,
-            "priority_level": query.priority_level,
-            "scheduled_days": infer_scheduled_days(encode_priority(query.priority_level), query.scheduled_days),
-            "total_transit_days": round(float(total_time), 2),
-            "route": route_details,
+            "recommended_option": 1,
+            "executive_summary": (
+                "Option 1 selected by default — AI analysis unavailable due to rate limiting. "
+                "This is the mathematically fastest route; review risk scores manually."
+            ),
+            "trade_offs": [
+                "Option 1 is the fastest but risk factors were not AI-assessed.",
+                "Consider reviewing node_risks in the response payload directly.",
+            ],
         }
 
-    except nx.NetworkXNoPath:
-        raise HTTPException(status_code=404, detail="No compliant route exists.")
 
 if __name__ == "__main__":
     import uvicorn
