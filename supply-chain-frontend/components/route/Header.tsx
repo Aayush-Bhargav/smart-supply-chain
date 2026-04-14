@@ -1,6 +1,6 @@
 'use client';
 
-import { ArrowLeft, Share2, Download } from 'lucide-react';
+import { ArrowLeft, Share2, Download, Save } from 'lucide-react';
 import { RouteResponse } from '@/types/route';
 
 interface HeaderProps {
@@ -8,9 +8,11 @@ interface HeaderProps {
   onBack: () => void;
   onShare: () => void;
   onExport: () => void;
+  onSave?: () => void; // Optional save prop
+  saving?: boolean; // Optional saving state
 }
 
-export default function Header({ response, onBack, onShare, onExport }: HeaderProps) {
+export default function Header({ response, onBack, onShare, onExport, onSave, saving }: HeaderProps) {
   return (
     <>
       <div className="bg-gray-900 text-white shadow-lg border-b border-gray-800">
@@ -38,6 +40,25 @@ export default function Header({ response, onBack, onShare, onExport }: HeaderPr
                 <Download className="w-4 h-4 mr-2" />
                 Export
               </button>
+              {onSave && (
+                <button
+                  onClick={onSave}
+                  disabled={saving}
+                  className="flex items-center px-4 py-2 text-gray-300 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving ? (
+                    <>
+                      <div className="w-4 h-4 mr-2 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 mr-2" />
+                      Save
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -53,7 +74,7 @@ export default function Header({ response, onBack, onShare, onExport }: HeaderPr
               </h1>
             </div>
             <p className="text-xl opacity-90">
-              Total Transit Time: <span className="font-bold">{response.total_transit_days} days</span>
+              Total Transit Time: <span className="font-bold">{response.recommended_routes[0]?.total_transit_days || 0} days</span>
             </p>
           </div>
         </div>
