@@ -298,7 +298,6 @@ export default function RoutePage() {
           <div className="lg:col-span-2 space-y-6">
             <RouteVisualization
           response={legacyFormatResponse}
-          cityCoordinates={cityCoordinates}
         />
           </div>
         </div>
