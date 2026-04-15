@@ -244,8 +244,8 @@ def fusion_agent(state: RiskState):
                 reason = "Geopolitical/Security Risk"
  
         final[city] = {
-            "risk":       0.9,
-            #  "risk":       round(risk, 3),
+            #"risk":       0.9,
+              "risk":       round(risk, 3),
             "reason":     reason,
             "components": {
                 "weather": round(w, 2),
