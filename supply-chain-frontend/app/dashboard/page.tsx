@@ -18,6 +18,8 @@ import ReRoutePreview from '@/components/dashboard/ReRoutePreview';
 interface RouteCity {
   city: string;
   status: string;
+  mode?: string;
+  days?: number;
 }
 
 interface Shipment {
@@ -119,36 +121,55 @@ export default function DashboardPage() {
     if (!shipment || !previewData) return;
 
     try {
-      // Find the last completed city in the original route
-      const lastCompletedIndex = shipment.selected_route.route
-        .map((city, idx) => ({ idx, status: city.status }))
-        .filter((item) => item.status === 'completed')
-        .pop()?.idx ?? -1;
+      // Find all completed cities from the original route
+      const completedCities = shipment.selected_route.route.filter(
+        (city: any) => city.status === 'completed'
+      );
 
-      // Create new route with preserved completed cities and new active city
-      const updatedRouteWithPreserved = previewData.updated_route.map((city: any, index: number) => {
-        // If this city was completed in the original route, keep it completed
-        const originalCity = shipment.selected_route.route.find(
-          (origCity: any) => origCity.city === city.city && origCity.status === 'completed'
-        );
-        
-        if (originalCity) {
-          return { ...city, status: 'completed' };
-        }
-        
-        // First non-completed city becomes active
-        if (index === 0 || (lastCompletedIndex === -1 && index === 0)) {
-          return { ...city, status: 'active' };
-        }
-        
-        return { ...city, status: 'pending' };
-      });
+      // Transform backend route data to include transport mode information
+      // Backend returns route as edges: [{from, to, mode, days}, ...]
+      // Frontend expects cities: [{city, status, mode, days}, ...]
+      const backendRoute: any[] = previewData.updated_route;
+      const cityRouteWithModes: RouteCity[] = [];
+      
+      // If backend route is in edge format, transform it
+      if (backendRoute.length > 0 && backendRoute[0].from) {
+        backendRoute.forEach((edge: any, index: number) => {
+          // Add the "from" city with its transport mode
+          cityRouteWithModes.push({
+            city: edge.from,
+            status: index === 0 ? 'active' : 'pending',
+            mode: edge.mode,
+            days: edge.days
+          });
+          
+          // Add the "to" city (last one won't have a mode)
+          if (index === backendRoute.length - 1) {
+            cityRouteWithModes.push({
+              city: edge.to,
+              status: 'pending'
+            });
+          }
+        });
+      } else {
+        // If already in city format, use as-is
+        cityRouteWithModes.push(...backendRoute.map((city: any, index: number) => ({
+          ...city,
+          status: index === 0 ? 'active' : 'pending'
+        })));
+      }
+
+      // Create new route by prepending completed cities + new route from backend
+      const updatedRouteWithPreserved = [
+        ...completedCities.map((city: any) => ({ ...city, status: 'completed' })),
+        ...cityRouteWithModes
+      ];
 
       // Update shipment with new route
       await updateDoc(doc(db, 'user_shipments', shipmentId), {
         flag: 1,
         'selected_route.route': updatedRouteWithPreserved,
-        'selected_route.current_index': Math.max(0, lastCompletedIndex + 1),
+        'selected_route.current_index': completedCities.length,
         updated_at: new Date(),
       });
 
@@ -161,7 +182,7 @@ export default function DashboardPage() {
                 selected_route: {
                   ...s.selected_route,
                   route: updatedRouteWithPreserved,
-                  current_index: Math.max(0, lastCompletedIndex + 1),
+                  current_index: completedCities.length,
                 },
               }
             : s
@@ -641,6 +662,19 @@ export default function DashboardPage() {
                             }`}>
                               {city.city}
                             </p>
+
+                            {/* Transport mode between cities */}
+                            {index < shipment.selected_route.route.length - 1 && city.mode && (
+                              <div className="flex items-center gap-1 px-2 py-1 bg-gray-700/50 rounded-md">
+                                <span className="text-xs text-gray-400">
+                                  {city.mode === 'Truck' ? '🚛' : 
+                                   city.mode === 'rail' ? '🚆' : 
+                                   city.mode === 'Ocean' ? '🚢' : 
+                                   city.mode === 'Air' ? '✈️' : '📦'}
+                                </span>
+                                <span className="text-xs text-gray-300 capitalize">{city.mode}</span>
+                              </div>
+                            )}
 
                             {/* Status pill */}
                             <span className={`text-xs px-2 py-0.5 rounded-full ${

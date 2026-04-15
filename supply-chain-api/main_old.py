@@ -937,7 +937,7 @@ def live_track(req: LiveTrackRequest):
     # ── Cities still ahead, excluding final destination ───────────────────────
     # We assess risk only on intermediate cities (the ones that can be avoided).
     # The destination itself can't be avoided so no point penalising it.
-    remaining_cities = [normalize_city(c) for c in cities[current_city_idx:-1]]
+    remaining_cities = [normalize_city(c) for c in cities[current_city_idx+1:-1]]
     print(f"🌍 Assessing risk for: {remaining_cities}")
  
     # ── Call risk engine ──────────────────────────────────────────────────────

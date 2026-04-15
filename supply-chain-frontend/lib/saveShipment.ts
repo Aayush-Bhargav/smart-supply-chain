@@ -89,6 +89,7 @@ export const saveShipment = async ({
 
     const trackingRoute = cities.map((city: string, index: number) => ({
       city,
+      
       status:
         index === 0 ? "active" : "pending", // first city = active
     }));
