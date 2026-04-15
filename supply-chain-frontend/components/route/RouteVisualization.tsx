@@ -2,7 +2,7 @@
 
 import 'leaflet/dist/leaflet.css';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { RouteResponse } from '@/types/route';
 
@@ -14,7 +14,6 @@ const Popup       = dynamic(() => import('react-leaflet').then(mod => mod.Popup)
 
 interface RouteVisualizationProps {
   response: any;                    // accepts legacyFormatResponse from new page.tsx
-  cityCoordinates?: Record<string, { lat: number; lng: number }>;
 }
 
 const TRANSPORT_COLORS: Record<string, string> = {
@@ -24,8 +23,17 @@ const TRANSPORT_COLORS: Record<string, string> = {
   Rail:  '#8b5cf6',
 };
 
-export default function RouteVisualization({ response, cityCoordinates: propCityCoords }: RouteVisualizationProps) {
+export default function RouteVisualization({ response }: RouteVisualizationProps) {
   const mapRef = useRef<any>(null);
+  const [cityCoordinates, setCityCoordinates] = useState<Record<string, [number, number]>>({});
+
+  // Load city coordinates from JSON file
+  useEffect(() => {
+    fetch('/data/city_coords_cache.json')
+      .then(res => res.json())
+      .then(data => setCityCoordinates(data))
+      .catch(err => console.error('Error loading city coordinates:', err));
+  }, []);
 
   // Fix Leaflet icons
   useEffect(() => {
@@ -41,15 +49,11 @@ export default function RouteVisualization({ response, cityCoordinates: propCity
     }
   }, []);
 
-  // Use coordinates from prop (new page.tsx) OR from response.city_coordinates (backend)
-  const cityCoordinates = propCityCoords ?? 
-    (response.city_coordinates || response.cityCoordinates || {}) as Record<string, { lat: number; lng: number }>;
-
   const currentRoute = response.route || [];
 
   const getCityCoordinates = (city: string): [number, number] => {
     const coord = cityCoordinates[city];
-    if (coord) return [coord.lat, coord.lng];
+    if (coord) return coord; // JSON format is [lat, lng] array
     console.warn(`⚠️ Missing coordinates for city: ${city}`);
     return [20, 78]; // fallback
   };

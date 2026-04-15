@@ -55,7 +55,7 @@ INFER_EDGES_FILE     = "edges_inference.json"
 CATEGORY_MAPPING_FILE = "category_mapping.json"
 FEATURE_SCHEMA_FILE  = "feature_schema.json"
 
-MODEL_FILE       = "supply_chain_model.pth.zip"
+MODEL_FILE       = "supply_chain_model.pth"
 NODE_SCALER_FILE = "node_scaler.pkl"
 EDGE_SCALER_FILE = "edge_scaler.pkl"
 
@@ -365,6 +365,14 @@ class DecisionRequest(BaseModel):
     routes:         list
     node_risks:     dict
 
+class LiveTrackRequest(BaseModel):
+    route_id: str
+    cities: list[dict]  # [{"city_name": "Mumbai", "status": "completed", "order": 1}]
+    current_city_index: int  # Index of last completed city for re-routing
+    delivery_type: str
+    category: str
+    dispatch_date: str
+
 # ============================================================
 # ROUTE BUILDING HELPERS
 # ============================================================
@@ -414,6 +422,206 @@ def is_edge_allowed(edge_data, delivery_type):
     return True
 
 # ============================================================
+# Function to find top k routes definition
+# ============================================================
+def find_top_route(
+    query: RouteRequest,
+    node_risks: dict,
+) -> dict:
+    """
+    Re-routing engine for /live_track.
+
+    Uses the same ML + physics + risk-penalty logic as /find_route but:
+      - Returns only the single best route (no Gemini, no top-3)
+      - Accepts pre-computed node_risks from the caller (no extra risk calls)
+      - No transit hub logic (live re-routes always use an empty hub list)
+      - Risk is baked into G_simple edge weights BEFORE path search so
+        NetworkX naturally avoids high-risk cities via Dijkstra
+
+    Returns a single route dict in the same shape as one entry in
+    /find_route's `recommended_routes` list:
+    {
+        "option": 1,
+        "total_transit_days": float,
+        "route_risk_level": float,
+        "route": [ {"from", "to", "mode", "days", "base_time",
+                    "risk_score", "risk_reason"}, ... ],
+        "forced_through_hubs": False,
+        "has_high_risk_hub": False,
+    }
+    Raises HTTPException(404) if no path exists.
+    """
+
+    RISK_PENALTY_MULTIPLIER = 10.0
+
+    # ── 1. Validate cities ────────────────────────────────────────────────────
+    print(f"🔍 Validating cities: {query.source_city} -> {query.target_city}")
+    if query.source_city not in city_to_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Re-route source '{query.source_city}' not found in graph."
+        )
+    if query.target_city not in city_to_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Re-route target '{query.target_city}' not found in graph."
+        )
+
+    src_id = city_to_id[query.source_city]
+    tgt_id = city_to_id[query.target_city]
+
+    # ── 2. Build time-enriched edge features ─────────────────────────────────
+    _dt, modified_features = build_request_edge_features(query)
+    new_edge_attr = torch.tensor(
+        edge_scaler.transform(modified_features), dtype=torch.float
+    )
+
+    # ── 3. Run GNN to get per-edge delay predictions ──────────────────────────
+    with torch.no_grad():
+        predictions = ml_model(
+            x_tensor, edge_index_tensor, new_edge_attr, edge_index_tensor
+        ).view(-1).cpu().numpy()
+
+    # ── 4. Write GNN delay + physics baseline into graph weights ─────────────
+    src_country = nodes_data[id_map[src_id]]["country"]
+    tgt_country = nodes_data[id_map[tgt_id]]["country"]
+
+    for idx, (u, v, k) in enumerate(edge_order):
+        edge_data  = G[u][v][k]
+        delay      = max(0.0, float(predictions[idx]))
+        base_time  = edge_data["base_time"]
+        final_time = base_time + delay
+
+        # Heavy cross-border penalty when origin and destination are same country
+        if edge_data["source_country"] != edge_data["target_country"]:
+            if src_country == tgt_country:
+                final_time *= 1000
+
+        G[u][v][k]["weight"] = final_time
+
+    # ── 5. Filter graph by delivery_type ─────────────────────────────────────
+    G_filtered = nx.MultiDiGraph()
+    G_filtered.add_nodes_from(G.nodes(data=True))
+    for u, v, k in G.edges(keys=True):
+        if is_edge_allowed(G[u][v][k], query.delivery_type):
+            G_filtered.add_edge(u, v, key=k, **G[u][v][k])
+
+    # ── 6. Flatten to simple DiGraph + bake risk into weights BEFORE search ───
+    # This is the critical step: Dijkstra must see risk-adjusted weights so it
+    # naturally routes around high-risk cities rather than being corrected after.
+    # risk=0.0 → +0 days | risk=0.4 → +4 days | risk=0.7 → +7 days | risk=1.0 → +10 days
+    G_simple = nx.DiGraph()
+    for u, v, k, data in G_filtered.edges(keys=True, data=True):
+        city_u = normalize_city(id_to_city[u])
+        city_v = normalize_city(id_to_city[v])
+
+        risk_u_data = node_risks.get(city_u)
+        risk_v_data = node_risks.get(city_v)
+        risk_u = risk_u_data.get("risk", 0.0) if isinstance(risk_u_data, dict) else 0.0
+        risk_v = risk_v_data.get("risk", 0.0) if isinstance(risk_v_data, dict) else 0.0
+        edge_risk = max(risk_u, risk_v)
+
+        # Risk baked in: high-risk edges are genuinely expensive for Dijkstra
+        risk_adjusted_weight = data["weight"] + (edge_risk * RISK_PENALTY_MULTIPLIER)
+
+        if G_simple.has_edge(u, v):
+            if risk_adjusted_weight < G_simple[u][v]["weight"]:
+                G_simple[u][v]["weight"] = risk_adjusted_weight
+        else:
+            G_simple.add_edge(u, v, weight=risk_adjusted_weight)
+
+    # ── 7. Find candidate paths ───────────────────────────────────────────────
+    try:
+        paths_gen       = nx.shortest_simple_paths(G_simple, src_id, tgt_id, weight="weight")
+        candidate_paths = list(islice(paths_gen, 10))
+    except nx.NetworkXNoPath:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No compliant re-route found from "
+                   f"'{query.source_city}' to '{query.target_city}'."
+        )
+
+    # ── 8. Score candidates ───────────────────────────────────────────────────
+    # Risk is already baked into path selection via G_simple weights above.
+    # Here we use the raw edge weight (GNN + physics only) for the reported
+    # total_transit_days so the user sees actual travel time, not inflated time.
+    # The >= 0.8 hard block is a final safety net for catastrophic-risk nodes.
+    best_route = None
+
+    for path in candidate_paths:
+        total_time     = 0.0
+        max_route_risk = 0.0
+        route_details  = []
+        blocked        = False
+
+        for i in range(len(path) - 1):
+            u = path[i]
+            v = path[i + 1]
+
+            city_u = normalize_city(id_to_city[u])
+            city_v = normalize_city(id_to_city[v])
+
+            risk_u_data = node_risks.get(city_u)
+            risk_v_data = node_risks.get(city_v)
+            risk_u = risk_u_data.get("risk", 0.0) if isinstance(risk_u_data, dict) else 0.0
+            risk_v = risk_v_data.get("risk", 0.0) if isinstance(risk_v_data, dict) else 0.0
+
+            edge_risk   = max(risk_u, risk_v)
+            reason_u    = risk_u_data.get("reason", "Normal") if isinstance(risk_u_data, dict) else "Normal"
+            reason_v    = risk_v_data.get("reason", "Normal") if isinstance(risk_v_data, dict) else "Normal"
+            edge_reason = reason_u if risk_u >= risk_v else reason_v
+
+            # Hard block for catastrophic-risk nodes (safety net)
+            if edge_risk >= 0.8:
+                blocked = True
+                break
+
+            if not G_filtered.has_node(u) or v not in G_filtered[u]:
+                blocked = True
+                break
+
+            # Use raw weight (GNN + physics) — risk already steered path choice
+            edge_options = G_filtered[u][v]
+            best_key     = min(edge_options, key=lambda kk: edge_options[kk]["weight"])
+            best_edge    = edge_options[best_key]
+            leg_time     = best_edge["weight"]   # ← raw, no double-count
+
+            total_time += leg_time
+            if edge_risk > max_route_risk:
+                max_route_risk = edge_risk
+
+            if not (route_details and route_details[-1]["to"] == id_to_city[v]):
+                route_details.append({
+                    "from":        id_to_city[u],
+                    "to":          id_to_city[v],
+                    "mode":        best_edge["mode"],
+                    "days":        round(float(leg_time), 2),
+                    "base_time":   round(float(best_edge["base_time"]), 2),
+                    "risk_score":  round(edge_risk, 2),
+                    "risk_reason": edge_reason,
+                })
+
+        if not blocked and route_details:
+            best_route = {
+                "option":              1,
+                "total_transit_days":  round(float(total_time), 2),
+                "route_risk_level":    round(max_route_risk, 2),
+                "route":               route_details,
+                "forced_through_hubs": False,
+                "has_high_risk_hub":   False,
+            }
+            break  # First non-blocked candidate is the Dijkstra-best; stop here
+
+    if best_route is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"All candidate re-routes from '{query.source_city}' to "
+                   f"'{query.target_city}' pass through high-risk cities (risk ≥ 0.8)."
+        )
+
+    return best_route
+
+# ============================================================
 # ENDPOINTS
 # ============================================================
 @app.get("/")
@@ -459,17 +667,23 @@ def find_route(query: RouteRequest):
         ).view(-1).cpu().numpy()
 
     for idx, (u, v, k) in enumerate(edge_order):
-        edge_data             = G[u][v][k]
-        predicted_total_time  = max(0.1, float(predictions[idx]))
-
-        # Penalise cross-border edges that are not needed for a domestic shipment
+        edge_data = G[u][v][k]
+        delay = float(predictions[idx])
+        delay=max(0.0,delay)
+        physics_time = edge_data["base_time"]
+        final_time = physics_time + delay
         if edge_data["source_country"] != edge_data["target_country"]:
-            if nodes_data[id_map[src_id]]["country"] == nodes_data[id_map[tgt_id]]["country"]:
-                predicted_total_time *= 1000
+    # if both source and final destination are same country
+            if id_to_city[src_id] and id_to_city[tgt_id]:
+                src_country = nodes_data[id_map[src_id]]["country"]
+                tgt_country = nodes_data[id_map[tgt_id]]["country"]
 
-        G[u][v][k]["weight"] = predicted_total_time
+                if src_country == tgt_country:
+                    final_time *= 1000   # strong penalty
+        G[u][v][k]["weight"] = final_time
 
     # ── PASS 2: Filter graph by delivery type ──
+    print("Filtering graph by delivery type")
     G_filtered = nx.MultiDiGraph()
     for u, v, k in G.edges(keys=True):
         if is_edge_allowed(G[u][v][k], query.delivery_type):
@@ -639,7 +853,7 @@ def find_route(query: RouteRequest):
         route["option"] = i + 1
 
     # ── Final response (now type-safe and UI-friendly) ──
-        # ── Final response (now includes coordinates for the map) ──
+        # ── Final response (now includes coordinates for the map)
     return {
         "source":             query.source_city,
         "target":             query.target_city,
@@ -651,7 +865,6 @@ def find_route(query: RouteRequest):
         "priority_level":     query.priority_level,
         "recommended_routes": top_3,
         "node_risks":         node_risks,
-        "city_coordinates":   city_to_coordinates,      # ← NEW
     }
 
 @app.post("/select_best_route")
@@ -703,7 +916,109 @@ def select_best_route(req: DecisionRequest):
                 "Consider reviewing node_risks in the response payload directly.",
             ],
         }
-
+#------------------------------------------------#
+# Post route for live tracking                   #
+#------------------------------------------------#
+@app.post("/live_track")
+def live_track(req: LiveTrackRequest):
+    print("📡 Live tracking request received:", req.route_id)
+ 
+    cities           = [city["city_name"] for city in req.cities]
+    current_city_idx = req.current_city_index
+ 
+    # ── Guard: nothing to re-route ────────────────────────────────────────────
+    if current_city_idx < 0 or current_city_idx >= len(cities) - 1:
+        return {"status": "no_reroute", "message": "No re-routing needed", "flag": 0}
+ 
+    source_city = cities[current_city_idx]   # last completed city
+    target_city = cities[-1]                 # final destination
+    print(f"🔀 Re-routing from '{source_city}' → '{target_city}'")
+ 
+    # ── Cities still ahead, excluding final destination ───────────────────────
+    # We assess risk only on intermediate cities (the ones that can be avoided).
+    # The destination itself can't be avoided so no point penalising it.
+    remaining_cities = [normalize_city(c) for c in cities[current_city_idx+1:-1]]
+    print(f"🌍 Assessing risk for: {remaining_cities}")
+ 
+    # ── Call risk engine ──────────────────────────────────────────────────────
+    # assess_route_risk returns the full RiskState dict.
+    # The usable output is result["final_risk"]:
+    #   { "Mumbai": {"risk": 0.7, "reason": "...", "components": {...}}, ... }
+    try:
+        node_risks = assess_route_risk(remaining_cities)
+        print(f"✅ node_risks: {node_risks}")
+    except Exception as e:
+        print(f"❌ Risk assessment failed: {e}")
+        node_risks = {}
+ 
+    # ── Detect high-risk cities ───────────────────────────────────────────────
+    # node_risks values are always dicts like {"risk": float, "reason": str, ...}
+    high_risk_cities = [
+        city for city, data in node_risks.items()
+        if isinstance(data, dict) and data.get("risk", 0.0) > 0.4
+    ]
+ 
+    if not high_risk_cities:
+        print("✅ No high-risk cities — current route is fine")
+        return {
+            "status":     "no_reroute_needed",
+            "message":    "No high-risk cities on remaining route",
+            "flag":       0,
+            "node_risks": node_risks,
+        }
+ 
+    print(f"⚠️ High-risk cities: {high_risk_cities} — finding alternate route")
+ 
+    # ── Build RouteRequest for find_top_route ─────────────────────────────────
+    reroute_query = RouteRequest(
+        source_city    = source_city,
+        target_city    = target_city,
+        category_name  = req.category,
+        quantity       = 1.0,
+        delivery_type  = req.delivery_type,
+        transit_hubs   = [],
+        dispatch_date  = req.dispatch_date,
+        priority_level = "Standard Class",
+    )
+ 
+    # ── Find best alternate route ─────────────────────────────────────────────
+    try:
+        best_route = find_top_route(reroute_query, node_risks)
+    except HTTPException as e:
+        print(f"❌ Re-routing failed: {e.detail}")
+        return {
+            "status":     "error",
+            "message":    e.detail,
+            "flag":       0,
+            "node_risks": node_risks,
+        }
+ 
+    print(f"✅ Re-route found: {best_route['total_transit_days']} days, "
+          f"risk={best_route['route_risk_level']}")
+ 
+    # ── Build updated_route for frontend ─────────────────────────────────────
+    # Frontend reads response.data.updated_route as the new selected_route.route
+    # Shape: [{"city": str, "status": "pending"}, ...]
+    new_legs      = best_route["route"]
+    all_cities    = [leg["from"] for leg in new_legs] + [new_legs[-1]["to"]]
+    updated_route = [{"city": c, "status": "pending"} for c in all_cities]
+ 
+    # flag=1 is what triggers the in-card re-route notification on the frontend
+    print(f"✅ Re-route notification triggered: {updated_route}")
+    return {
+        "status":             "rerouted",
+        "message":            f"Re-routed — avoided: {high_risk_cities}",
+        "flag":               1,
+        "source":             source_city,
+        "target":             target_city,
+        "category_name":      req.category,
+        "quantity":           1.0,
+        "delivery_type":      req.delivery_type,
+        "dispatch_date":      req.dispatch_date,
+        "recommended_routes": [best_route],
+        "node_risks":         node_risks,
+        "updated_route":      updated_route,
+    }
 
 if __name__ == "__main__":
     import uvicorn

@@ -4,10 +4,13 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { RouteResponse } from '@/types/route';
 import { Header, RouteVisualization, RouteDetails, RouteSegments, RouteStats } from '@/components/route';
-import { CheckCircle, BrainCircuit, AlertTriangle, Loader2 } from 'lucide-react';
+import { CheckCircle, BrainCircuit, AlertTriangle, Loader2, Save } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
+import { saveShipment } from '@/lib/saveShipment';
 
 export default function RoutePage() {
   const router = useRouter();
+  const { user } = useAuth();
 
   const [response, setResponse]                 = useState<RouteResponse | null>(null);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
@@ -16,6 +19,8 @@ export default function RoutePage() {
   const [geminiError, setGeminiError]           = useState<string | null>(null); // NEW: surface errors
   const [loading, setLoading]                   = useState(true);
   const [error, setError]                       = useState<string | null>(null);
+  const [saving, setSaving]                     = useState(false);
+  const [saveSuccess, setSaveSuccess]             = useState(false);
   // ← UPDATED: now typed and will be populated
   const [cityCoordinates, setCityCoordinates]   = useState<Record<string, {lat: number; lng: number}>>({});
 
@@ -23,6 +28,12 @@ export default function RoutePage() {
   const hasFetchedGemini = useRef(false);
 
   useEffect(() => {
+    // Check authentication first
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+
     const routeData = sessionStorage.getItem('currentRouteData');
 
     if (!routeData) {
@@ -31,52 +42,75 @@ export default function RoutePage() {
       return;
     }
 
-    let parsedData: RouteResponse;
     try {
-      parsedData = JSON.parse(routeData);
-    } catch {
-      setError('Route data was corrupted. Please submit a new request.');
+      const parsed = JSON.parse(routeData) as RouteResponse;
+      console.log('Parsed route data:', parsed);
+      setResponse(parsed);
+      setCityCoordinates(parsed.city_coordinates || {});
+    } catch (err) {
+      setError('Failed to parse route data.');
+    } finally {
       setLoading(false);
-      return;
     }
+  }, [router]);
 
-    setResponse(parsedData);
-    setLoading(false);
-    setCityCoordinates(parsedData.city_coordinates || {});
-
-    if (!hasFetchedGemini.current) {
+  useEffect(() => {
+    console.log('Gemini useEffect triggered');
+    console.log('hasFetchedGemini.current:', hasFetchedGemini.current);
+    console.log('response:', response);
+    console.log('response.recommended_routes:', response?.recommended_routes);
+    console.log('response.node_risks:', response?.node_risks);
+    
+    // Only call API if we have all required data
+    if (!hasFetchedGemini.current && response && response.recommended_routes && response.node_risks) {
+      console.log('Conditions met, calling Gemini API...');
       hasFetchedGemini.current = true;
       setGeminiLoading(true);
       setGeminiError(null);
 
-      console.log('🚨 FRONTEND TRIGGER: Calling /select_best_route API');
+      console.log('DEBUG: About to call /select_best_route API');
+      console.log('DEBUG: API call data:', {
+        priority_level: response.priority_level,
+        routes: response.recommended_routes,
+        node_risks: response.node_risks,
+      });
+
+      console.log('DEBUG: Starting fetch to http://localhost:8000/select_best_route');
       fetch('http://localhost:8000/select_best_route', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          priority_level: parsedData.priority_level,
-          routes:         parsedData.recommended_routes,
-          node_risks:     parsedData.node_risks,
+          priority_level: response.priority_level,
+          routes:         response.recommended_routes,
+          node_risks:     response.node_risks,
         }),
       })
         .then(res => {
-          if (!res.ok) throw new Error(`Server returned ${res.status}`);
+          console.log('DEBUG: API response received');
+          console.log('DEBUG: API response status:', res.status);
+          console.log('DEBUG: API response ok:', res.ok);
+          if (!res.ok) {
+            console.log('DEBUG: API response not ok, throwing error');
+            throw new Error(`Server returned ${res.status}`);
+          }
+          console.log('DEBUG: Parsing JSON response...');
           return res.json();
         })
         .then(decision => {
+          console.log('Gemini Response:', decision);
           setGeminiDecision(decision);
           setSelectedRouteIndex(decision.recommended_option - 1);
         })
         .catch(err => {
           console.error('Gemini failed:', err);
           setGeminiError(
-            'AI recommendation unavailable — the model may be rate-limited. ' +
+            'AI recommendation unavailable - the model may be rate-limited. ' +
             'Route options are still shown below; Option 1 is the fastest by default.'
           );
         })
         .finally(() => setGeminiLoading(false));
     }
-  }, []);
+  });
 
   const handleShare = () => {
     if (response) {
@@ -93,6 +127,39 @@ export default function RoutePage() {
       link.setAttribute('href', dataUri);
       link.setAttribute('download', `route-${response.source}-${response.target}.json`);
       link.click();
+    }
+  };
+
+  const handleSaveShipment = async () => {
+    if (!response || !user) return;
+    
+    setSaving(true);
+    setSaveSuccess(false);
+    console.log("saving");
+    try {
+      await saveShipment({
+        userId: user.uid,
+        source: response.source,
+        target: response.target,
+        category_name: response.category_name,
+        quantity: response.quantity,
+        delivery_type: response.delivery_type,
+        priority_level: response.priority_level,
+        dispatch_date: response.dispatch_date,
+        transit_hubs: response.transit_hubs,
+        recommended_routes: response.recommended_routes,
+        selected_option: 0, // Auto-fill as requested
+        node_risks: response.node_risks,
+        // city_coordinates: response.city_coordinates,
+        ai_recommendation: geminiDecision,
+      });
+      console.log("saved");
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000); // Hide after 3 seconds
+    } catch (error) {
+      console.error('Error saving shipment:', error);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -137,9 +204,22 @@ export default function RoutePage() {
         onBack={() => router.push('/')}
         onShare={handleShare}
         onExport={handleExport}
+        onSave={handleSaveShipment}
+        saving={saving}
       />
 
       <div className="container mx-auto px-4 py-8">
+
+        {/* ── Save Success Message ── */}
+        {saveSuccess && (
+          <div className="mb-8 p-6 bg-green-900/30 border border-green-400 rounded-xl flex items-center gap-4">
+            <CheckCircle className="w-6 h-6 text-green-400" />
+            <div>
+              <p className="font-semibold text-green-200">Shipment Saved Successfully!</p>
+              <p className="text-green-300 text-sm">Your shipment has been saved to your account.</p>
+            </div>
+          </div>
+        )}
 
         {/* ── Gemini AI Panel ── */}
         {geminiLoading && (
@@ -166,7 +246,7 @@ export default function RoutePage() {
                 <h2 className="text-2xl font-bold text-white mb-2">AI Recommendation</h2>
                 <p className="text-lg text-blue-100 mb-4">{geminiDecision.executive_summary}</p>
                 <ul className="space-y-2">
-                  {geminiDecision.trade_offs.map((tradeoff: string, i: number) => (
+                  {geminiDecision.trade_offs?.map((tradeoff: string, i: number) => (
                     <li key={i} className="flex items-center text-gray-300">
                       <CheckCircle className="w-4 h-4 text-green-400 mr-2 flex-shrink-0" />
                       {tradeoff}
@@ -218,7 +298,6 @@ export default function RoutePage() {
           <div className="lg:col-span-2 space-y-6">
             <RouteVisualization
           response={legacyFormatResponse}
-          cityCoordinates={cityCoordinates}
         />
           </div>
         </div>

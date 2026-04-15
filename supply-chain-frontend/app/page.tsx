@@ -1,11 +1,15 @@
 'use client';
-
+import { useAuth } from "@/context/AuthContext";
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { MapPin, Package, Clock, Calendar, Loader2, Truck } from 'lucide-react';
+import { useEffect } from 'react';
+import { signOut } from "firebase/auth";
+import { auth } from "@/lib/firebase";
+import { MapPin, Package, Clock, Calendar, Loader2, Truck, BarChart3 } from 'lucide-react';
 import { RouteRequest } from '@/types/route';
 import CityAutocomplete from '@/components/CityAutocomplete';
 import TransitHubs from '@/components/TransitHubs';
+import Link from 'next/link';
 
 const CATEGORIES = [
   "Accessories", "As Seen on TV!", "Baby", "Baseball & Softball", "Basketball",
@@ -38,6 +42,7 @@ const PRIORITY_LEVELS = [
 
 export default function Home() {
   const router = useRouter();
+  const { user, loading } = useAuth();
 
   const [formData, setFormData] = useState<RouteRequest>({
     source_city:          '',
@@ -54,12 +59,12 @@ export default function Home() {
   });
 
   const [isSimulationMode, setIsSimulationMode] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loader, setLoader] = useState(false);
   const [error, setError]     = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setLoader(true);
     setError(null);
 
     // Clear stale data so a failed mid-flight request never shows old results
@@ -85,13 +90,24 @@ export default function Home() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
-      setLoading(false);
+      setLoader(false);
     }
   };
 
   const handleInputChange = (field: keyof RouteRequest, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
+  // use effect for user authentication session testing
+
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/login");
+    }
+  }, [user, loading]);
+
+
+
 
   return (
     <div className="min-h-screen">
@@ -105,6 +121,18 @@ export default function Home() {
           <p className="text-xl text-gray-600 font-medium">
             AI-powered route optimization for global logistics
           </p>
+          <div className="flex items-center space-x-4">
+            <Link
+              href="/dashboard"
+              className="flex items-center px-4 py-2 text-gray-700 hover:text-white hover:bg-blue-600 transition-all duration-200 rounded-lg font-medium"
+            >
+              <BarChart3 className="w-4 h-4 mr-2" />
+              Dashboard
+            </Link>
+            <button onClick={() => signOut(auth)} className="flex items-center px-4 py-2 text-gray-700 hover:text-white hover:bg-blue-600 transition-all duration-200 rounded-lg font-medium">
+              Logout
+            </button>
+          </div>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">
