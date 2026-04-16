@@ -317,13 +317,19 @@ export default function Home() {
           </div>
 
           {/* Map / Empty State */}
-          <div className="card p-6 h-[600px] hover-lift">
+          <div className="card p-6 h-[920px] hover-lift">
             <h2 className="text-3xl font-bold mb-6 gradient-text">Route Visualization</h2>
-            {loading ? (
+            {loader ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
-                  <Loader2 className="w-16 h-16 animate-spin text-blue-600 mx-auto mb-6" />
-                  <p className="text-gray-600 text-lg font-medium">Calculating optimal route...</p>
+                  <div className="relative mb-8">
+                    <div className="w-20 h-20 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto"></div>
+                    <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+                      <Loader2 className="w-8 h-8 text-blue-600 animate-pulse" />
+                    </div>
+                  </div>
+                  <p className="text-gray-700 text-xl font-medium mb-2">Please wait, Our agents are calculating the perfect route for you</p>
+                  <p className="text-gray-500 text-sm">This may take a few moments...</p>
                 </div>
               </div>
             ) : (

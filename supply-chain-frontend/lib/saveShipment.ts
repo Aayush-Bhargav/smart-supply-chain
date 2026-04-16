@@ -48,6 +48,19 @@ export const saveShipment = async ({
       if (firstRoute) {
         const cities = extractCitiesFromRoute(firstRoute.route);
         
+        // Create route with mode information for fallback case
+        const trackingRoute = cities.map((city: string, index: number) => {
+          const edge = firstRoute.route.find((e: any) => e.from === city);
+          const cityData: any = {
+            city,
+            status: index === 0 ? "active" : "pending",
+          };
+          // Only add mode and days if they exist (Firebase doesn't accept undefined)
+          if (edge?.mode) cityData.mode = edge.mode;
+          if (edge?.days) cityData.days = edge.days;
+          return cityData;
+        });
+        
         const docRef = await addDoc(collection(db, "user_shipments"), {
           userId,
           source,
@@ -65,10 +78,7 @@ export const saveShipment = async ({
           ai_recommendation,
           selected_route: {
             option: firstRoute.option,
-            route: cities.map((city: string, index: number) => ({
-              city,
-              status: index === 0 ? "active" : "pending",
-            })),
+            route: trackingRoute,
             current_index: 0,
           },
           alerts: [],
@@ -84,15 +94,23 @@ export const saveShipment = async ({
       }
     }
     
-    // 🔹 Convert route → tracking format
+    // 🔹 Convert route → tracking format with mode information
     const cities = extractCitiesFromRoute(selectedRouteData.route);
 
-    const trackingRoute = cities.map((city: string, index: number) => ({
-      city,
+    // Create route with mode information (mode represents transport to next city)
+    const trackingRoute = cities.map((city: string, index: number) => {
+      // Find the corresponding edge that starts from this city
+      const edge = selectedRouteData.route.find((e: any) => e.from === city);
       
-      status:
-        index === 0 ? "active" : "pending", // first city = active
-    }));
+      const cityData: any = {
+        city,
+        status: index === 0 ? "active" : "pending",
+      };
+      // Only add mode and days if they exist (Firebase doesn't accept undefined)
+      if (edge?.mode) cityData.mode = edge.mode;
+      if (edge?.days) cityData.days = edge.days;
+      return cityData;
+    });
 
     const docRef = await addDoc(collection(db, "user_shipments"), {
       userId,

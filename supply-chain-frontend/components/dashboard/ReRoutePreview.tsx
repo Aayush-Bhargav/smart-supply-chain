@@ -72,11 +72,25 @@ export default function ReRoutePreview({
             New Route Preview
           </h4>
           <div className="bg-gray-50 rounded-lg p-3">
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-2">
               {updated_route.slice(0, 3).map((city: any, index: number) => (
                 <div key={index} className="flex items-center gap-2 text-sm">
                   <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                  <span className="text-gray-700">{city.city}</span>
+                  <span className="text-gray-700 font-medium">{city.city}</span>
+                  
+                  {/* Transport mode badge */}
+                  {city.mode && index < updated_route.length - 1 && (
+                    <div className="flex items-center gap-1 px-2 py-0.5 bg-blue-100 rounded-md">
+                      <span className="text-xs">
+                        {city.mode === 'road' || city.mode === 'Truck' ? '🚛' : 
+                         city.mode === 'rail' || city.mode === 'Rail' ? '🚆' : 
+                         city.mode === 'sea' || city.mode === 'Ocean' ? '🚢' : 
+                         city.mode === 'air' || city.mode === 'Air' ? '✈️' : '📦'}
+                      </span>
+                      <span className="text-xs text-blue-700 capitalize">{city.mode}</span>
+                    </div>
+                  )}
+                  
                   {index === 0 && (
                     <span className="text-xs text-blue-500 font-medium">Start</span>
                   )}
