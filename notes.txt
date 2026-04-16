@@ -1,7 +1,0 @@
-open weather api key: 723f50afcd9786d87ed04d170ae22506
-
-gnews api key: 2065bd4ab5ddd326dc96f409368a3694
-
-gemini api key: AIzaSyAW1jVVJw9_6obMC_yxZzoeXX9ODaPvBV4
-
-news data api key: pub_282712a46b6742059134e96e3a82ff08
