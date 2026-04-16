@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
-import { RouteResponse } from '@/types/route';
+import { RouteResponse, RouteSegment } from '@/types/route';
 
 const Map = dynamic(() => import('react-leaflet').then(mod => mod.MapContainer), { ssr: false });
 const TileLayer = dynamic(() => import('react-leaflet').then(mod => mod.TileLayer), { ssr: false });
@@ -164,6 +164,7 @@ const getTransportModeColor = (mode: string): string => {
 
 export default function RouteMap({ response }: RouteMapProps) {
   const mapRef = useRef<any>(null);
+  const segments = response.route ?? [];
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -188,7 +189,7 @@ export default function RouteMap({ response }: RouteMapProps) {
 
   const routeCoordinates: [number, number][] = [];
   
-  response.route.forEach((segment) => {
+  segments.forEach((segment: RouteSegment) => {
     const fromCoords = getCityCoordinates(segment.from);
     const toCoords = getCityCoordinates(segment.to);
     
@@ -222,7 +223,7 @@ export default function RouteMap({ response }: RouteMapProps) {
       />
 
       {/* Route segments with different colors */}
-      {response.route.map((segment, index) => {
+      {segments.map((segment: RouteSegment, index: number) => {
         const fromCoords = getCityCoordinates(segment.from);
         const toCoords = getCityCoordinates(segment.to);
         
@@ -247,7 +248,7 @@ export default function RouteMap({ response }: RouteMapProps) {
       })}
 
       {/* Markers for cities */}
-      {response.route.map((segment, index) => {
+      {segments.map((segment: RouteSegment, index: number) => {
         const fromCoords = getCityCoordinates(segment.from);
         const toCoords = getCityCoordinates(segment.to);
         
@@ -262,7 +263,7 @@ export default function RouteMap({ response }: RouteMapProps) {
               </Popup>
             </Marker>
             
-            {index === response.route.length - 1 && (
+            {index === segments.length - 1 && (
               <Marker position={toCoords}>
                 <Popup>
                   <div className="text-sm">

@@ -47,9 +47,9 @@ export default function ReRoutesPage() {
         );
         
         const querySnapshot = await getDocs(q);
-        const reRoutesData = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
+        const reRoutesData = querySnapshot.docs.map((docSnapshot) => ({
+          id: docSnapshot.id,
+          ...(docSnapshot.data() as Omit<ReRouteData, 'id'>),
         }));
         
         setReRoutes(reRoutesData);
@@ -302,8 +302,8 @@ export default function ReRoutesPage() {
                             <div className="flex items-center justify-between">
                               <span className="text-blue-200 font-medium">Option {altRoute.option}</span>
                               <span className="text-gray-400 text-sm">
-                                {altRoute.route && altRoute.route.length > 0 
-                                  ? `${altRoute.route[0]} → ${altRoute.route[altRoute.route.length - 1]}` 
+                                {altRoute.route && altRoute.route.length > 0
+                                  ? `${altRoute.route[0]} → ${altRoute.route[altRoute.route.length - 1]}`
                                   : 'Route data unavailable'
                                 }
                               </span>
@@ -311,7 +311,8 @@ export default function ReRoutesPage() {
                           </div>
                         ))}
                       </div>
-                  </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

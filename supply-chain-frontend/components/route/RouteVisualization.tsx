@@ -64,7 +64,7 @@ export default function RouteVisualization({ response }: RouteVisualizationProps
     routeCoordinates.push(getCityCoordinates(segment.to));
   });
 
-  const center = routeCoordinates.length > 0 ? routeCoordinates[0] : [20, 78];
+  const center: [number, number] = routeCoordinates.length > 0 ? routeCoordinates[0] : [20, 78];
 
   if (routeCoordinates.length === 0) {
     return (

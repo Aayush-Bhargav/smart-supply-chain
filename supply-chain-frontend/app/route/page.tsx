@@ -7,6 +7,7 @@ import { Header, RouteVisualization, RouteDetails, RouteSegments, RouteStats } f
 import { CheckCircle, BrainCircuit, AlertTriangle, Loader2, Save } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { saveShipment } from '@/lib/saveShipment';
+import { apiUrl } from '@/lib/api';
 
 export default function RoutePage() {
   const router = useRouter();
@@ -75,8 +76,8 @@ export default function RoutePage() {
         node_risks: response.node_risks,
       });
 
-      console.log('DEBUG: Starting fetch to http://localhost:8000/select_best_route');
-      fetch('http://localhost:8000/select_best_route', {
+      console.log('DEBUG: Starting fetch to /select_best_route');
+      fetch(apiUrl('/select_best_route'), {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -110,7 +111,7 @@ export default function RoutePage() {
         })
         .finally(() => setGeminiLoading(false));
     }
-  });
+  }, [response]);
 
   const handleShare = () => {
     if (response) {

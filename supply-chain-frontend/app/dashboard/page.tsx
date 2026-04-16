@@ -13,6 +13,7 @@ import LiveTrackingToggle from '@/components/dashboard/LiveTrackingToggle';
 import ReRouteNotification from '@/components/dashboard/ReRouteNotification';
 import RouteCard from '@/components/dashboard/RouteCard';
 import ReRoutePreview from '@/components/dashboard/ReRoutePreview';
+import { apiUrl } from '@/lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface RouteCity {
@@ -231,7 +232,7 @@ export default function DashboardPage() {
       const payload = buildPayload(shipment);
       console.log('🚀 Live track →', shipmentId, payload);
 
-      const response = await axios.post('http://localhost:8000/live_track', payload, {
+      const response = await axios.post(apiUrl('/live_track'), payload, {
         headers: { 'Content-Type': 'application/json' },
       });
 

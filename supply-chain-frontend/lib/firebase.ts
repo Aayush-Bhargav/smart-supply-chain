@@ -1,31 +1,45 @@
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
+import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseApiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+const firebaseAuthDomain = process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN;
+const firebaseProjectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+const firebaseStorageBucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET;
+const firebaseMessagingSenderId = process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
+const firebaseAppId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID;
+const firebaseMeasurementId = process.env.NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID;
+
+if (!firebaseApiKey) throw new Error("NEXT_PUBLIC_FIREBASE_API_KEY is not set");
+if (!firebaseAuthDomain) throw new Error("NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN is not set");
+if (!firebaseProjectId) throw new Error("NEXT_PUBLIC_FIREBASE_PROJECT_ID is not set");
+if (!firebaseStorageBucket) throw new Error("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET is not set");
+if (!firebaseMessagingSenderId) throw new Error("NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID is not set");
+if (!firebaseAppId) throw new Error("NEXT_PUBLIC_FIREBASE_APP_ID is not set");
+if (!firebaseMeasurementId) throw new Error("NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID is not set");
+
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: "solution-challenge-c6fea.firebasestorage.app",
-  messagingSenderId: "110244755998",
-  appId: "1:110244755998:web:4260607480722ba7c4cc0f",
-  measurementId: "G-ZS5DRL7PDG"
+  apiKey: firebaseApiKey,
+  authDomain: firebaseAuthDomain,
+  projectId: firebaseProjectId,
+  storageBucket: firebaseStorageBucket,
+  messagingSenderId: firebaseMessagingSenderId,
+  appId: firebaseAppId,
+  measurementId: firebaseMeasurementId,
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
+const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Analytics only on client side
 let analytics = null;
 if (typeof window !== 'undefined') {
-  analytics = getAnalytics(app);
+  try {
+    analytics = getAnalytics(app);
+  } catch (error) {
+    console.warn('Firebase analytics is unavailable in this environment.', error);
+  }
 }
 
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export { analytics };

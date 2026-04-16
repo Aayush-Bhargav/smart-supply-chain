@@ -27,11 +27,13 @@ if [ $? -eq 0 ]; then
     echo "✅ Dependencies installed successfully!"
     echo ""
     echo "🎯 Next steps:"
-    echo "1. Start your API server: cd ../supply-chain-api && python main.py"
-    echo "2. Start the frontend: npm run dev"
-    echo "3. Open: http://localhost:3000"
+    echo "1. Copy the example env file: cp .env.example .env.local"
+    echo "2. Set NEXT_PUBLIC_API_BASE_URL and your Firebase values in .env.local"
+    echo "3. Start your API server: cd ../supply-chain-api && uvicorn main:app --host 0.0.0.0 --port 8000"
+    echo "4. Start the frontend: npm run dev"
+    echo "5. Open: http://localhost:3000"
     echo ""
-    echo "🌐 The frontend will connect to: http://localhost:8000/find_route"
+    echo "🌐 The frontend will connect using NEXT_PUBLIC_API_BASE_URL"
 else
     echo "❌ Failed to install dependencies"
     exit 1

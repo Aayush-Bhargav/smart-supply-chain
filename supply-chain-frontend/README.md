@@ -37,11 +37,13 @@ npm start
 
 ## 🔧 Configuration
 
-Update the API endpoint in `app/page.tsx`:
+Copy the example env file and set your backend URL plus Firebase values:
 
-```typescript
-const res = await fetch('http://localhost:8000/find_route', {
+```bash
+cp .env.example .env.local
 ```
+
+The frontend reads the backend URL from `NEXT_PUBLIC_API_BASE_URL`.
 
 ## 📍 API Integration
 
@@ -99,4 +101,4 @@ interface RouteSegment {
 
 ## 🚀 Deployment
 
-Ready for deployment on Vercel, Netlify, or any static hosting platform.
+Ready for deployment on Vercel with an env-driven backend URL.

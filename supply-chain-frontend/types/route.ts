@@ -8,13 +8,6 @@ export interface RouteSegment {
   risk_reason: string;
 }
 
-export interface RouteOption {
-  option: number;
-  total_transit_days: number;
-  route_risk_level: number;
-  route: RouteSegment[];
-}
-
 export interface RouteRequest {
   source_city: string;
   target_city: string;
@@ -24,19 +17,9 @@ export interface RouteRequest {
   dispatch_date: string;
   scheduled_days?: number | null;
   delivery_type?: string;
-  transit_hubs?: string[];
+  transit_hubs: string[];
   mock_disruption_city?: string | null;
   mock_disruption_type?: string | null;
-}
-
-export interface RouteSegment {
-  from: string;
-  to: string;
-  mode: string;
-  days: number;
-  base_time: number;
-  risk_score: number;
-  risk_reason: string;
 }
 
 export interface RecommendedRoute {
@@ -59,5 +42,7 @@ export interface RouteResponse {
   priority_level: string;
   recommended_routes: RecommendedRoute[];
   node_risks: Record<string, any>;
-  city_coordinates: Record<string, { lat: number; lng: number }>;   // ← NEW
+  city_coordinates?: Record<string, { lat: number; lng: number }>;
+  route?: RouteSegment[];
+  total_transit_days?: number;
 }

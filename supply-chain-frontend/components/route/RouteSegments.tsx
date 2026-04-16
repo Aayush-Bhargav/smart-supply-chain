@@ -13,11 +13,13 @@ const getTransportModeColor = (mode: string): string => {
 };
 
 export default function RouteSegments({ response }: RouteSegmentsProps) {
+  const segments = response.route ?? [];
+
   return (
     <div className="bg-gray-800 rounded-xl p-6 border border-gray-700">
       <h2 className="text-xl font-bold mb-4 text-blue-400">Route Segments</h2>
       <div className="space-y-3">
-        {response.route.map((segment, index) => (
+        {segments.map((segment, index) => (
           <div key={index} className="flex items-center p-3 bg-gray-700 rounded-lg">
             <div className="text-2xl mr-3">
               {segment.mode === 'Truck' && '🚚'}

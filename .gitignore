@@ -1,5 +1,6 @@
 # Python Backend
 supply-chain-api/venv/
+supply-chain-api/.venv/
 supply-chain-api/__pycache__/
 supply-chain-api/*.pyc
 .env
@@ -42,9 +43,11 @@ supply-chain-ui/yarn.lock
 *.swo
 supply-chain-frontend/node_modules/
 supply-chain-frontend/.next/
+supply-chain-frontend/.vercel/
 supply-chain-frontend/out/
 supply-chain-frontend/build/
 supply-chain-frontend/.env*.local
+*.tsbuildinfo
 # Large ML Model Files (CAUSING PUSH ISSUES)
 supply-chain-api/*.pth
 supply-chain-api/*.pkl

@@ -10,6 +10,7 @@ import { RouteRequest } from '@/types/route';
 import CityAutocomplete from '@/components/CityAutocomplete';
 import TransitHubs from '@/components/TransitHubs';
 import Link from 'next/link';
+import { apiUrl } from '@/lib/api';
 
 const CATEGORIES = [
   "Accessories", "As Seen on TV!", "Baby", "Baseball & Softball", "Basketball",
@@ -72,7 +73,7 @@ export default function Home() {
 
     try {
       console.log('🚨 FRONTEND TRIGGER: Calling /find_route API');
-      const res = await fetch('http://localhost:8000/find_route', {
+      const res = await fetch(apiUrl('/find_route'), {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(formData),
@@ -223,7 +224,7 @@ export default function Home() {
                   </div>
 
                   <TransitHubs
-                    value={formData.transit_hubs}
+                    value={formData.transit_hubs ?? []}
                     onChange={(hubs) => handleInputChange('transit_hubs', hubs)}
                   />
                 </div>

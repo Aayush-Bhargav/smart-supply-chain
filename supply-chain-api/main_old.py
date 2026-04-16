@@ -31,10 +31,14 @@ print("🚀 Waking up Supply Chain Route API...")
 # ============================================================
 # ENVIRONMENT CONFIGURATION
 # ============================================================
-ENVIRONMENT     = os.getenv("ENVIRONMENT", "development")
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
-PORT            = int(os.getenv("PORT", 8080))
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",") if os.getenv("ALLOWED_ORIGINS") else ["*"]
+ENVIRONMENT    = os.getenv("ENVIRONMENT", "development")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
+PORT           = int(os.getenv("PORT", 8080))
+raw_origins    = os.getenv("ALLOWED_ORIGINS", "")
+ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+
+if ENVIRONMENT != "production" and not ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS = ["http://localhost:3000"]
 
 # ── Single Gemini client for the decision endpoint ──
 # risk_engine.py has its OWN genai.configure() + risk_model instance.
@@ -312,8 +316,8 @@ app = FastAPI(title="Supply Chain Route API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 

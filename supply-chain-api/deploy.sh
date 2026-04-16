@@ -1,40 +1,49 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Google Cloud Deployment Script for Supply Chain API
+set -euo pipefail
 
-echo "🚀 Starting Google Cloud Deployment..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Set your project ID
-PROJECT_ID="your-project-id-here"
-echo "Setting project: $PROJECT_ID"
-gcloud config set project $PROJECT_ID
+PROJECT_ID="${PROJECT_ID:-}"
+REGION="${REGION:-us-central1}"
+SERVICE="${SERVICE:-smart-supply-chain-api}"
+ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://localhost:3000}"
 
-# Enable required APIs
-echo "📋 Enabling required APIs..."
-gcloud services enable appengine.googleapis.com
-gcloud services enable cloudbuild.googleapis.com
+required_vars=(
+  PROJECT_ID
+  GEMINI_API_KEY
+  OPENWEATHER_API_KEY
+  GNEWS_API_KEY
+)
 
-# Clean git to avoid large file issues
-echo "🧹 Cleaning git history..."
-git reset --soft HEAD~1  # Undo last commit but keep changes
-git add .
-git commit -m "Deployment ready - excluding large files"
+for var_name in "${required_vars[@]}"; do
+  if [[ -z "${!var_name:-}" ]]; then
+    echo "Missing required environment variable: ${var_name}" >&2
+    exit 1
+  fi
+done
 
-# Deploy to App Engine
-echo "🌐 Deploying to Google Cloud App Engine..."
-gcloud app deploy --quiet
+echo "🚀 Deploying ${SERVICE} to Cloud Run in ${REGION}..."
+gcloud config set project "${PROJECT_ID}"
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com
 
-echo "✅ Deployment complete!"
-echo "📍 Your API is now live at: https://$PROJECT_ID.appspot.com"
-echo ""
-echo "📝 Test your API with:"
-echo "curl -X POST https://$PROJECT_ID.appspot.com/find_route \\"
-echo "  -H 'Content-Type: application/json' \\"
-echo "  -d '{"
-echo "    \"source_city\": \"New York\","
-echo "    \"target_city\": \"Los Angeles\","
-echo "    \"category_name\": \"Men's Clothing\","
-echo "    \"quantity\": 5,"
-echo "    \"priority_level\": \"Standard Class\","
-echo "    \"dispatch_date\": \"2026-04-03T14:30:00\""
-echo "  }'"
+gcloud run deploy "${SERVICE}" \
+  --source "${SCRIPT_DIR}" \
+  --project "${PROJECT_ID}" \
+  --region "${REGION}" \
+  --allow-unauthenticated \
+  --memory 2Gi \
+  --cpu 1 \
+  --concurrency 1 \
+  --timeout 300 \
+  --min-instances 0 \
+  --max-instances 2 \
+  --port 8080 \
+  --set-env-vars "ENVIRONMENT=production,ALLOWED_ORIGINS=${ALLOWED_ORIGINS},GEMINI_API_KEY=${GEMINI_API_KEY},OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY},GNEWS_API_KEY=${GNEWS_API_KEY}"
+
+echo "✅ Deployment complete."
+echo "🌐 Service URL:"
+gcloud run services describe "${SERVICE}" \
+  --project "${PROJECT_ID}" \
+  --region "${REGION}" \
+  --format='value(status.url)'
