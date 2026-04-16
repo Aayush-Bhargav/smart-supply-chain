@@ -1002,10 +1002,18 @@ def live_track(req: LiveTrackRequest):
  
     # ── Build updated_route for frontend ─────────────────────────────────────
     # Frontend reads response.data.updated_route as the new selected_route.route
-    # Shape: [{"city": str, "status": "pending"}, ...]
+    # Shape: [{"city": str, "status": "pending", "mode": str, "days": float}, ...]
     new_legs      = best_route["route"]
     all_cities    = [leg["from"] for leg in new_legs] + [new_legs[-1]["to"]]
-    updated_route = [{"city": c, "status": "pending"} for c in all_cities]
+    updated_route = []
+    for i, city in enumerate(all_cities):
+        city_data = {"city": city, "status": "pending"}
+        # Add mode and days for all cities except the last one (no transport from destination)
+        if i < len(new_legs):
+            leg = new_legs[i]
+            city_data["mode"] = leg["mode"]
+            city_data["days"] = leg["days"]
+        updated_route.append(city_data)
  
     # flag=1 is what triggers the in-card re-route notification on the frontend
     print(f"✅ Re-route notification triggered: {updated_route}")

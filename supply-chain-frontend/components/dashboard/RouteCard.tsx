@@ -1,7 +1,7 @@
 'use client';
 
-import React from 'react';
-import { Package, MapPin, Clock, CheckCircle, Truck, Zap } from 'lucide-react';
+import React, { useState } from 'react';
+import { Package, MapPin, Clock, CheckCircle, Truck, Zap, Trash2 } from 'lucide-react';
 import LiveTrackingToggle from './LiveTrackingToggle';
 
 interface RouteCity {
@@ -29,6 +29,7 @@ interface RouteCardProps {
   onStartTransit: (shipmentId: string) => void;
   onToggleCityStatus: (shipmentId: string, cityIndex: number, currentStatus: string) => void;
   onLiveTrackingToggle: (shipmentId: string, enabled: boolean) => void;
+  onDelete: (shipmentId: string) => void;
 }
 
 export default function RouteCard({
@@ -37,9 +38,11 @@ export default function RouteCard({
   updatingCity,
   onStartTransit,
   onToggleCityStatus,
-  onLiveTrackingToggle
+  onLiveTrackingToggle,
+  onDelete
 }: RouteCardProps) {
   
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const isInTransit = shipment.status === 'in_transit';
   const isDelivered = shipment.status === 'delivered';
 
@@ -94,6 +97,41 @@ export default function RouteCard({
               <span className="capitalize">{shipment.status.replace('_', ' ')}</span>
             </span>
           </div>
+        </div>
+        
+        {/* Delete Button */}
+        <div className="relative">
+          <button
+            onClick={() => setShowDeleteConfirm(!showDeleteConfirm)}
+            className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+            title="Delete shipment"
+          >
+            <Trash2 className="w-5 h-5" />
+          </button>
+          
+          {/* Delete Confirmation */}
+          {showDeleteConfirm && (
+            <div className="absolute right-0 mt-2 w-48 bg-white/95 backdrop-blur-lg border border-white/20 rounded-xl shadow-2xl p-3 z-10">
+              <p className="text-sm text-gray-700 mb-2">Are you sure you want to delete?</p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    onDelete(shipment.id);
+                    setShowDeleteConfirm(false);
+                  }}
+                  className="flex-1 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  Yes
+                </button>
+                <button
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="flex-1 px-3 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-medium rounded-lg transition-colors"
+                >
+                  No
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

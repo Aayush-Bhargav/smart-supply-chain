@@ -149,7 +149,7 @@ export default function RoutePage() {
         dispatch_date: response.dispatch_date,
         transit_hubs: response.transit_hubs,
         recommended_routes: response.recommended_routes,
-        selected_option: 0, // Auto-fill as requested
+        selected_option: selectedRouteIndex + 1, // Use user-selected route (options are 1-indexed)
         node_risks: response.node_risks,
         // city_coordinates: response.city_coordinates,
         ai_recommendation: geminiDecision,

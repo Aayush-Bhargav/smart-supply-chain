@@ -3,9 +3,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { collection, query, where, orderBy, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import { signOut } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 import { db } from '@/lib/firebase';
-import { Package, MapPin, Clock, AlertTriangle, CheckCircle, Truck, Zap, RefreshCw } from 'lucide-react';
+import { Package, MapPin, Clock, AlertTriangle, CheckCircle, Truck, Zap, RefreshCw, Trash2 } from 'lucide-react';
 import axios from 'axios';
 import Link from 'next/link';
 import Notification from '@/components/dashboard/Notification';
@@ -21,6 +23,13 @@ interface RouteCity {
   status: string;
   mode?: string;
   days?: number;
+}
+
+interface RouteEdge {
+  from: string;
+  to: string;
+  mode: string;
+  days: number;
 }
 
 interface Shipment {
@@ -107,12 +116,24 @@ export default function DashboardPage() {
     type?: 'success' | 'error' | 'warning' | 'info';
   }>({ show: false, message: '' });
 
+  const [deleteConfirmFor, setDeleteConfirmFor] = useState<string | null>(null);
+
   // Refs for the queue runner — we use refs so the interval closure always
   // sees the latest shipments state without re-registering the interval.
   const shipmentsRef = useRef<Shipment[]>([]);
   const liveTrackingMapRef = useRef<Record<string, boolean>>({});
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const isRunningRef = useRef(false); // prevents overlapping queue runs
+
+  // Delete shipment handler
+  const handleDeleteShipment = useCallback(async (shipmentId: string) => {
+    try {
+      await deleteDoc(doc(db, 'user_shipments', shipmentId));
+      setShipments((prev) => prev.filter((s) => s.id !== shipmentId));
+    } catch (err) {
+      console.error('Error deleting shipment:', err);
+    }
+  }, []);
 
   // Apply re-route with preserved completed cities
   const applyReRoute = useCallback(async (shipmentId: string) => {
@@ -503,7 +524,17 @@ export default function DashboardPage() {
               <Link href="/" className="flex items-center px-4 py-2 text-gray-300 hover:text-white transition-colors rounded-lg">
                 <Package className="w-4 h-4 mr-2" /> New Route
               </Link>
-              <button onClick={() => console.log('Sign out')} className="flex items-center px-4 py-2 text-gray-300 hover:text-white transition-colors rounded-lg">
+              <button 
+                onClick={async () => {
+                  try {
+                    await signOut(auth);
+                    router.push('/');
+                  } catch (error) {
+                    console.error('Error signing out:', error);
+                  }
+                }} 
+                className="flex items-center px-4 py-2 text-gray-300 hover:text-white transition-colors rounded-lg"
+              >
                 Sign Out
               </button>
             </div>
@@ -538,6 +569,7 @@ export default function DashboardPage() {
               const isDelivered = shipment.status === 'delivered';
               const isLive = !!liveTrackingMap[shipment.id];
               const isReRouted = !!reRoutedMap[shipment.id];
+              const showDeleteConfirm = deleteConfirmFor === shipment.id;
 
               return (
                 <div
@@ -582,14 +614,50 @@ export default function DashboardPage() {
                       </div>
                     </div>
 
-                    {/* ── Per-card Live Tracking Toggle ── */}
-                    <div className="ml-4 flex-shrink-0">
+                    {/* ── Header Actions ── */}
+                    <div className="ml-4 flex items-center gap-2">
+                      {/* ── Per-card Live Tracking Toggle ── */}
                       <LiveTrackingToggle
                         enabled={isLive}
                         onToggle={(enabled) => handleShipmentLiveTrackingToggle(shipment.id, enabled)}
                         size="small"
                         showLabel={true}
                       />
+                      
+                      {/* ── Delete Button ── */}
+                      <div className="relative">
+                        <button
+                          onClick={() => setDeleteConfirmFor(deleteConfirmFor === shipment.id ? null : shipment.id)}
+                          className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                          title="Delete shipment"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                        
+                        {/* ── Delete Confirmation ── */}
+                        {showDeleteConfirm && (
+                          <div className="absolute right-0 mt-2 w-48 bg-white/95 backdrop-blur-lg border border-white/20 rounded-xl shadow-2xl p-3 z-10">
+                            <p className="text-sm text-gray-700 mb-2">Are you sure you want to delete?</p>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => {
+                                  handleDeleteShipment(shipment.id);
+                                  setDeleteConfirmFor(null);
+                                }}
+                                className="flex-1 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors"
+                              >
+                                Yes
+                              </button>
+                              <button
+                                onClick={() => setDeleteConfirmFor(null)}
+                                className="flex-1 px-3 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-medium rounded-lg transition-colors"
+                              >
+                                No
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -668,10 +736,10 @@ export default function DashboardPage() {
                             {index < shipment.selected_route.route.length - 1 && city.mode && (
                               <div className="flex items-center gap-1 px-2 py-1 bg-gray-700/50 rounded-md">
                                 <span className="text-xs text-gray-400">
-                                  {city.mode === 'Truck' ? '🚛' : 
-                                   city.mode === 'rail' ? '🚆' : 
-                                   city.mode === 'Ocean' ? '🚢' : 
-                                   city.mode === 'Air' ? '✈️' : '📦'}
+                                  {city.mode === 'road' || city.mode === 'Truck' ? '🚛' : 
+                                   city.mode === 'rail' || city.mode === 'Rail' ? '🚆' : 
+                                   city.mode === 'sea' || city.mode === 'Ocean' ? '🚢' : 
+                                   city.mode === 'air' || city.mode === 'Air' ? '✈️' : '📦'}
                                 </span>
                                 <span className="text-xs text-gray-300 capitalize">{city.mode}</span>
                               </div>

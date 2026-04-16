@@ -42,7 +42,7 @@ echo "✅ Frontend deployed"
 # ======================
 echo "🔒 Deploying Firestore rules & indexes..."
 cd supply-chain-frontend
-firebase deploy --only firestore:rules,firestore:indexes --project "$FIREBASE_PROJECT_ID" --non-interactive
+firebase deploy --only firestore:rules,firestore:indexes --project "solution-challenge-c6fea" --non-interactive
 cd ..
 
 echo "🎉 FULL DEPLOYMENT COMPLETE!"
