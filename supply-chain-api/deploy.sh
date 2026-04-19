@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ID="${PROJECT_ID:-}"
 REGION="${REGION:-us-central1}"
 SERVICE="${SERVICE:-smart-supply-chain-api}"
-ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-http://localhost:3000}"
+
 
 required_vars=(
   PROJECT_ID

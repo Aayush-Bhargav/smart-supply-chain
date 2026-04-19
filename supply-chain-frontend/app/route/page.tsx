@@ -285,6 +285,9 @@ export default function RoutePage() {
               <div className="text-sm text-gray-300">
                 {opt.total_transit_days} Days · Risk: {opt.route_risk_level}
               </div>
+              <div className="text-xs text-green-400 mt-1">
+                CO2: {opt.total_carbon_kg || 0} kg
+              </div>
             </button>
           ))}
         </div>

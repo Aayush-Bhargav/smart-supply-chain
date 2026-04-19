@@ -6,6 +6,7 @@ export interface RouteSegment {
   base_time: number;
   risk_score: number;
   risk_reason: string;
+  carbon_kg: number;               // <-- NEW
 }
 
 export interface RouteRequest {
@@ -26,9 +27,10 @@ export interface RecommendedRoute {
   option: number;
   total_transit_days: number;
   route_risk_level: number;
+  total_carbon_kg: number;
   route: RouteSegment[];
-  forced_through_hubs: boolean;     // ← NEW
-  has_high_risk_hub: boolean;       // ← NEW
+  forced_through_hubs: boolean;
+  has_high_risk_hub: boolean;
 }
 
 export interface RouteResponse {

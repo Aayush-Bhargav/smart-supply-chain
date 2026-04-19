@@ -182,9 +182,13 @@ export default function DashboardPage() {
       }
 
       // Create new route by prepending completed cities + new route from backend
+      // But filter out any cities that are already in completedCities to avoid duplicates
+      const completedCityNames = new Set(completedCities.map((city: any) => city.city));
+      const filteredNewRoute = cityRouteWithModes.filter((city: any) => !completedCityNames.has(city.city));
+      
       const updatedRouteWithPreserved = [
         ...completedCities.map((city: any) => ({ ...city, status: 'completed' })),
-        ...cityRouteWithModes
+        ...filteredNewRoute
       ];
 
       // Update shipment with new route

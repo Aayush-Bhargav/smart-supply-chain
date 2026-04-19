@@ -24,7 +24,26 @@ from dotenv import load_dotenv
 
 from risk_engine import assess_route_risk
 
+
+def calculate_carbon_kg(distance_km: float, mode: str, quantity: float = 1.0) -> float:
+    """Calculate CO2 emissions in kg for one leg"""
+    factors = {
+        "Truck": 0.08,   # 80g / ton-km
+        "Air":   0.60,   # 600g / ton-km
+        "Ocean": 0.02,   # 20g / ton-km
+    }
+    factor = factors.get(mode, 0.10)  # default if unknown
+    return round(distance_km * quantity * factor, 2)
+
+
+# Initialize only once (important for Cloud Run / FastAPI)
+
+
+
 load_dotenv()
+
+
+
 
 print("🚀 Waking up Supply Chain Route API...")
 
@@ -595,6 +614,10 @@ def find_top_route(
                 max_route_risk = edge_risk
 
             if not (route_details and route_details[-1]["to"] == id_to_city[v]):
+                # Calculate carbon emissions (does NOT affect routing logic)
+                distance_km = best_edge.get("distance", 100)  # fallback distance if not available
+                carbon_kg = calculate_carbon_kg(distance_km, best_edge["mode"], float(query.quantity))
+                
                 route_details.append({
                     "from":        id_to_city[u],
                     "to":          id_to_city[v],
@@ -603,13 +626,18 @@ def find_top_route(
                     "base_time":   round(float(best_edge["base_time"]), 2),
                     "risk_score":  round(edge_risk, 2),
                     "risk_reason": edge_reason,
+                    "carbon_kg":   carbon_kg,  # Only for display, not used in routing
                 })
 
         if not blocked and route_details:
+            # Calculate total carbon emissions for the entire route (display only)
+            total_carbon_kg = sum(leg.get("carbon_kg", 0) for leg in route_details)
+            
             best_route = {
                 "option":              1,
                 "total_transit_days":  round(float(total_time), 2),
                 "route_risk_level":    round(max_route_risk, 2),
+                "total_carbon_kg":     round(total_carbon_kg, 2),  # Display only
                 "route":               route_details,
                 "forced_through_hubs": False,
                 "has_high_risk_hub":   False,
@@ -819,13 +847,27 @@ def find_route(query: RouteRequest):
                 best_key     = min(edge_options, key=lambda kk: edge_options[kk]["weight"])
                 best_edge    = edge_options[best_key]
 
-                leg_time = best_edge["weight"] + (edge_risk * RISK_PENALTY_MULTIPLIER)
+                # Check if this edge is from an intermediate city (not source)
+                # Intermediate edges get reduced time due to cross-dock efficiency
+                leg_base_time = best_edge["weight"]
+                
+                # Check if current edge is NOT the first edge from source
+                # All edges after the first one get time reduction (cross-dock efficiency)
+                if len(route_details) > 0:
+                    # This is not the first edge, apply time reduction
+                    leg_base_time *= 0.7  # 30% reduction for cross-dock efficiency
+                
+                leg_time = leg_base_time + (edge_risk * RISK_PENALTY_MULTIPLIER)
                 total_time += leg_time
 
                 if edge_risk > max_route_risk:
                     max_route_risk = edge_risk
 
                 if not (route_details and route_details[-1]["to"] == id_to_city[v]):
+                    # Calculate carbon emissions (does NOT affect routing logic)
+                    distance_km = best_edge.get("distance", 100)  # fallback distance if not available
+                    carbon_kg = calculate_carbon_kg(distance_km, best_edge["mode"], float(query.quantity))
+                    
                     route_details.append({
                         "from":        id_to_city[u],
                         "to":          id_to_city[v],
@@ -834,12 +876,17 @@ def find_route(query: RouteRequest):
                         "base_time":   round(float(best_edge["base_time"]), 2),
                         "risk_score":  round(edge_risk, 2),
                         "risk_reason": edge_reason,
+                        "carbon_kg":   carbon_kg,  # Only for display, not used in routing
                     })
 
         if not blocked:
+            # Calculate total carbon emissions for the entire route (display only)
+            total_carbon_kg = sum(leg.get("carbon_kg", 0) for leg in route_details)
+            
             scored_combinations.append({
                 "total_transit_days": round(float(total_time), 2),
                 "route_risk_level":   round(max_route_risk, 2),
+                "total_carbon_kg":     round(total_carbon_kg, 2),  # Display only
                 "route":              route_details,
                 "forced_through_hubs": has_forced_hubs,
                 "has_high_risk_hub":   hub_forced_high_risk,
