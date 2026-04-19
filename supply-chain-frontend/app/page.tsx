@@ -35,10 +35,10 @@ const DELIVERY_TYPES = [
 ];
 
 const PRIORITY_LEVELS = [
-  { value: "Standard Class", label: "Standard Class (4 days)" },
-  { value: "Second Class",   label: "Second Class (3 days)" },
-  { value: "First Class",    label: "First Class (2 days)" },
-  { value: "Same Day",       label: "Same Day (1 day)" },
+  { value: "Standard Class", label: "Standard Class" },
+  { value: "Second Class",   label: "Second Class" },
+  { value: "First Class",    label: "First Class" },
+
 ];
 
 export default function Home() {

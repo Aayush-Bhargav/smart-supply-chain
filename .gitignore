@@ -47,6 +47,7 @@ supply-chain-frontend/.vercel/
 supply-chain-frontend/out/
 supply-chain-frontend/build/
 supply-chain-frontend/.env*.local
+supply-chain-frontend/.env
 *.tsbuildinfo
 # Large ML Model Files (CAUSING PUSH ISSUES)
 supply-chain-api/*.pth
