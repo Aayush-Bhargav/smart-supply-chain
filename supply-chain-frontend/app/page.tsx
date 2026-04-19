@@ -294,10 +294,10 @@ export default function Home() {
 
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || loader}
                   className="btn-primary w-full flex items-center justify-center text-lg mt-6"
                 >
-                  {loading ? (
+                  {loader ? (
                     <>
                       <Loader2 className="w-6 h-6 animate-spin mr-3" />
                       Analyzing Routes &amp; Risks...

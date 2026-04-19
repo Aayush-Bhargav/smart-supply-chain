@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { RouteResponse } from '@/types/route';
-import { Header, RouteVisualization, RouteDetails, RouteSegments, RouteStats } from '@/components/route';
-import { CheckCircle, BrainCircuit, AlertTriangle, Loader2, Save } from 'lucide-react';
+import { ControlTowerInsights, Header, RouteVisualization, RouteDetails, RouteSegments, RouteStats } from '@/components/route';
+import { CheckCircle, BrainCircuit, AlertTriangle, Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { saveShipment } from '@/lib/saveShipment';
 import { apiUrl } from '@/lib/api';
@@ -22,8 +22,6 @@ export default function RoutePage() {
   const [error, setError]                       = useState<string | null>(null);
   const [saving, setSaving]                     = useState(false);
   const [saveSuccess, setSaveSuccess]             = useState(false);
-  // ← UPDATED: now typed and will be populated
-  const [cityCoordinates, setCityCoordinates]   = useState<Record<string, {lat: number; lng: number}>>({});
 
   // Prevents React Strict Mode from firing the Gemini call twice in development
   const hasFetchedGemini = useRef(false);
@@ -47,7 +45,6 @@ export default function RoutePage() {
       const parsed = JSON.parse(routeData) as RouteResponse;
       console.log('Parsed route data:', parsed);
       setResponse(parsed);
-      setCityCoordinates(parsed.city_coordinates || {});
     } catch (err) {
       setError('Failed to parse route data.');
     } finally {
@@ -100,7 +97,14 @@ export default function RoutePage() {
         .then(decision => {
           console.log('Gemini Response:', decision);
           setGeminiDecision(decision);
-          setSelectedRouteIndex(decision.recommended_option - 1);
+          const recommendedIndex = Math.max(
+            0,
+            Math.min(
+              (decision.recommended_option || 1) - 1,
+              response.recommended_routes.length - 1
+            )
+          );
+          setSelectedRouteIndex(recommendedIndex);
         })
         .catch(err => {
           console.error('Gemini failed:', err);
@@ -151,6 +155,8 @@ export default function RoutePage() {
         recommended_routes: response.recommended_routes,
         selected_option: selectedRouteIndex + 1, // Use user-selected route (options are 1-indexed)
         node_risks: response.node_risks,
+        risk_checked_at: response.risk_checked_at,
+        risk_sources: response.risk_sources,
         // city_coordinates: response.city_coordinates,
         ai_recommendation: geminiDecision,
       });
@@ -258,6 +264,13 @@ export default function RoutePage() {
             </div>
           </div>
         )}
+        <div className="mb-8">
+          <ControlTowerInsights
+            response={response}
+            selectedRouteIndex={selectedRouteIndex}
+            recommendedOption={geminiDecision?.recommended_option ?? null}
+          />
+        </div>
         {currentRoute.has_high_risk_hub && (
   <div className="mb-6 p-4 bg-red-900/30 border border-red-400 rounded-2xl flex items-start gap-3">
     <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
@@ -287,6 +300,9 @@ export default function RoutePage() {
               </div>
               <div className="text-xs text-green-400 mt-1">
                 CO2: {opt.total_carbon_kg || 0} kg
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Hotspots: {opt.route.filter((segment) => (segment.risk_score || 0) > 0.4).length}
               </div>
             </button>
           ))}

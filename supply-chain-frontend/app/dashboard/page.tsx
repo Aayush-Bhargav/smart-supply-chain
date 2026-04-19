@@ -7,13 +7,11 @@ import { collection, query, where, orderBy, getDocs, doc, updateDoc, deleteDoc }
 import { signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { db } from '@/lib/firebase';
-import { Package, MapPin, Clock, AlertTriangle, CheckCircle, Truck, Zap, RefreshCw, Trash2 } from 'lucide-react';
+import { Package, MapPin, Clock, AlertTriangle, CheckCircle, Truck, RefreshCw, Trash2 } from 'lucide-react';
 import axios from 'axios';
 import Link from 'next/link';
 import Notification from '@/components/dashboard/Notification';
 import LiveTrackingToggle from '@/components/dashboard/LiveTrackingToggle';
-import ReRouteNotification from '@/components/dashboard/ReRouteNotification';
-import RouteCard from '@/components/dashboard/RouteCard';
 import ReRoutePreview from '@/components/dashboard/ReRoutePreview';
 import { apiUrl } from '@/lib/api';
 
@@ -23,13 +21,6 @@ interface RouteCity {
   status: string;
   mode?: string;
   days?: number;
-}
-
-interface RouteEdge {
-  from: string;
-  to: string;
-  mode: string;
-  days: number;
 }
 
 interface Shipment {
@@ -55,6 +46,17 @@ interface Shipment {
   flag?: number;
   liveTracking?: boolean;
   alerts: any[];
+  node_risks?: Record<string, {
+    risk?: number;
+    reason?: string;
+    checked_at?: string;
+    sources?: {
+      weather?: string;
+      news?: string;
+      analysis?: string;
+    };
+  }>;
+  risk_checked_at?: string;
 }
 
 interface ReRoutePreviewData {
@@ -62,6 +64,11 @@ interface ReRoutePreviewData {
   recommended_routes: any[];
   message: string;
   high_risk_cities: string[];
+  current_route: RouteCity[];
+  current_total_days: number;
+  current_risk_level: number;
+  current_high_risk_cities: string[];
+  avoided_high_risk_cities: string[];
 }
 
 // ─── localStorage key for persisting active live-tracking shipment IDs ────────
@@ -87,6 +94,31 @@ function buildPayload(shipment: Shipment) {
     category: shipment.category_name,
     dispatch_date: shipment.dispatch_date,
   };
+}
+
+function getRouteTransitDays(route: RouteCity[]) {
+  return route.reduce((sum, city) => sum + Number(city.days || 0), 0);
+}
+
+function getHighRiskEntriesForRoute(
+  route: RouteCity[],
+  nodeRisks?: Shipment['node_risks']
+) {
+  const routeCities = new Set(route.map((city) => city.city));
+
+  return Object.entries(nodeRisks || {})
+    .map(([city, riskData]) => ({
+      city,
+      risk: Number(riskData?.risk || 0),
+      reason: riskData?.reason || 'Operational risk',
+      checkedAt: riskData?.checked_at,
+    }))
+    .filter((entry) => routeCities.has(entry.city) && entry.risk > 0.4)
+    .sort((a, b) => b.risk - a.risk);
+}
+
+function getShipmentHighRiskEntries(shipment: Shipment) {
+  return getHighRiskEntriesForRoute(shipment.selected_route.route, shipment.node_risks);
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -117,6 +149,63 @@ export default function DashboardPage() {
   }>({ show: false, message: '' });
 
   const [deleteConfirmFor, setDeleteConfirmFor] = useState<string | null>(null);
+
+  const totalShipments = shipments.length;
+  const inTransitCount = shipments.filter((shipment) => shipment.status === 'in_transit').length;
+  const liveDecisionCount = Object.values(liveTrackingMap).filter(Boolean).length;
+  const rerouteAlertCount =
+    Object.values(reRoutedMap).filter(Boolean).length + Object.keys(reRoutePreview).length;
+  const topRiskHotspots = Array.from(
+    new Map(
+      shipments
+        .flatMap((shipment) =>
+          Object.entries(shipment.node_risks || {})
+            .map(([city, riskData]) => ({
+              city,
+              risk: Number(riskData?.risk || 0),
+              reason: riskData?.reason || 'Operational risk',
+              checkedAt: riskData?.checked_at,
+            }))
+            .filter((entry) => entry.risk > 0.4)
+        )
+        .sort((a, b) => b.risk - a.risk)
+        .map((entry) => [entry.city, entry] as const)
+    ).values()
+  ).slice(0, 4);
+  const shipmentImpactQueue = shipments
+    .map((shipment) => {
+      const highRiskEntries = getShipmentHighRiskEntries(shipment);
+      const rerouteReady = Boolean(reRoutePreview[shipment.id]);
+
+      return {
+        id: shipment.id,
+        label: `${shipment.source} → ${shipment.target}`,
+        status: rerouteReady ? 'Reroute ready' : highRiskEntries.length > 0 ? 'At risk' : 'Stable',
+        riskLevel: highRiskEntries[0]?.risk || 0,
+        impactedCities: highRiskEntries.map((entry) => entry.city).slice(0, 3),
+        rerouteReady,
+        liveTracking: Boolean(liveTrackingMap[shipment.id]),
+      };
+    })
+    .filter((entry) => entry.rerouteReady || entry.impactedCities.length > 0)
+    .sort((a, b) => Number(b.rerouteReady) - Number(a.rerouteReady) || b.riskLevel - a.riskLevel)
+    .slice(0, 5);
+
+  const formatRiskTimestamp = (value?: string) => {
+    if (!value) return 'Unknown';
+
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return value;
+    }
+
+    return parsed.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
 
   // Refs for the queue runner — we use refs so the interval closure always
   // sees the latest shipments state without re-registering the interval.
@@ -262,9 +351,43 @@ export default function DashboardPage() {
       });
 
       console.log('✅ Live track response:', response.data);
+      const latestNodeRisks = response.data?.node_risks || shipment.node_risks || {};
+      const latestRiskCheckedAt = response.data?.risk_checked_at || shipment.risk_checked_at;
+
+      if (response.data?.node_risks) {
+        await updateDoc(doc(db, 'user_shipments', shipmentId), {
+          node_risks: response.data.node_risks,
+          risk_checked_at: latestRiskCheckedAt || null,
+          updated_at: new Date(),
+        });
+
+        setShipments((prev) =>
+          prev.map((item) =>
+            item.id === shipmentId
+              ? {
+                  ...item,
+                  node_risks: response.data.node_risks,
+                  risk_checked_at: latestRiskCheckedAt,
+                }
+              : item
+          )
+        );
+      }
 
       // If backend signals a re-route (flag=1), show preview notification
       if (response.data?.flag === 1) {
+        const currentHighRiskEntries = getHighRiskEntriesForRoute(
+          shipment.selected_route.route,
+          latestNodeRisks
+        );
+        const currentHighRiskCities = currentHighRiskEntries.map((entry) => entry.city);
+        const proposedRouteCities = (response.data.updated_route || [])
+          .map((city: any) => city.city)
+          .filter(Boolean);
+        const avoidedHighRiskCities = currentHighRiskCities.filter(
+          (city) => !proposedRouteCities.includes(city)
+        );
+
         // Store the re-route data for preview but don't apply immediately
         setReRoutedMap((prev) => ({ ...prev, [shipmentId]: true }));
         
@@ -278,7 +401,12 @@ export default function DashboardPage() {
             high_risk_cities: response.data.node_risks ? 
               Object.entries(response.data.node_risks)
                 .filter(([city, data]: [string, any]) => data?.risk > 0.4)
-                .map(([city]) => city) : []
+                .map(([city]) => city) : [],
+            current_route: shipment.selected_route.route,
+            current_total_days: getRouteTransitDays(shipment.selected_route.route),
+            current_risk_level: currentHighRiskEntries[0]?.risk || 0,
+            current_high_risk_cities: currentHighRiskCities,
+            avoided_high_risk_cities: avoidedHighRiskCities,
           }
         }));
       }
@@ -554,6 +682,127 @@ export default function DashboardPage() {
           type={notification.type}
           onClose={() => setNotification({ show: false, message: '' })}
         />
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-8">
+          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Total Shipments</p>
+            <p className="text-3xl font-bold text-white mt-2">{totalShipments}</p>
+            <p className="text-sm text-gray-300 mt-1">Routes currently managed in the app</p>
+          </div>
+          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">In Transit</p>
+            <p className="text-3xl font-bold text-white mt-2">{inTransitCount}</p>
+            <p className="text-sm text-gray-300 mt-1">Active shipments being monitored</p>
+          </div>
+          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Live Decisions</p>
+            <p className="text-3xl font-bold text-white mt-2">{liveDecisionCount}</p>
+            <p className="text-sm text-gray-300 mt-1">Shipments with live rerouting enabled</p>
+          </div>
+          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Reroute Alerts</p>
+            <p className="text-3xl font-bold text-white mt-2">{rerouteAlertCount}</p>
+            <p className="text-sm text-gray-300 mt-1">Operational route changes awaiting review</p>
+          </div>
+        </div>
+
+        <div className="mb-8 rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-6">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-2xl font-bold text-white">Risk Control Tower</h2>
+              <p className="text-gray-300 mt-1">
+                Highest-severity disruption hotspots across your monitored shipments
+              </p>
+            </div>
+            <div className="text-sm text-gray-400">
+              Live view based on saved route risk snapshots and reroute monitoring
+            </div>
+          </div>
+
+          {topRiskHotspots.length === 0 ? (
+            <div className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-emerald-200">
+              No high-risk hotspots are currently flagged across tracked shipments.
+            </div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 mt-5">
+              {topRiskHotspots.map((hotspot) => (
+                <div
+                  key={hotspot.city}
+                  className="rounded-xl border border-yellow-400/20 bg-yellow-500/10 p-4"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-semibold text-white">{hotspot.city}</p>
+                    <span className="text-lg font-bold text-yellow-300">{hotspot.risk.toFixed(2)}</span>
+                  </div>
+                  <p className="text-sm text-gray-300 mt-2">{hotspot.reason}</p>
+                  <p className="text-xs text-gray-500 mt-3">
+                    Last checked {formatRiskTimestamp(hotspot.checkedAt)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mb-8 rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-6">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-2xl font-bold text-white">Shipment Impact Queue</h2>
+              <p className="text-gray-300 mt-1">
+                Which shipments are currently exposed and whether rerouting is ready
+              </p>
+            </div>
+            <div className="text-sm text-gray-400">
+              Sorted by reroute readiness and highest current risk
+            </div>
+          </div>
+
+          {shipmentImpactQueue.length === 0 ? (
+            <div className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-emerald-200">
+              No active shipment impacts are currently waiting for operator review.
+            </div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 mt-5">
+              {shipmentImpactQueue.map((impact) => (
+                <div
+                  key={impact.id}
+                  className="rounded-xl border border-white/10 bg-slate-950/70 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-white">{impact.label}</p>
+                      <p className="text-sm text-gray-400 mt-1">
+                        {impact.impactedCities.length > 0
+                          ? `Impacted via ${impact.impactedCities.join(', ')}`
+                          : 'No specific hotspot saved on the current path'}
+                      </p>
+                    </div>
+                    <span
+                      className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                        impact.rerouteReady
+                          ? 'bg-yellow-500/15 text-yellow-300 border border-yellow-400/20'
+                          : 'bg-red-500/15 text-red-300 border border-red-400/20'
+                      }`}
+                    >
+                      {impact.status}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+                    <div className="rounded-lg bg-slate-900 px-3 py-2">
+                      <p className="text-gray-500 text-xs uppercase tracking-wide">Risk</p>
+                      <p className="text-white font-semibold">{impact.riskLevel.toFixed(2)}</p>
+                    </div>
+                    <div className="rounded-lg bg-slate-900 px-3 py-2">
+                      <p className="text-gray-500 text-xs uppercase tracking-wide">Live Tracking</p>
+                      <p className="text-white font-semibold">{impact.liveTracking ? 'On' : 'Off'}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
         {shipments.length === 0 ? (
           <div className="text-center py-16">

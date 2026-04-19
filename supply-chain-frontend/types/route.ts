@@ -33,6 +33,28 @@ export interface RecommendedRoute {
   has_high_risk_hub: boolean;
 }
 
+export interface ComparisonRoute extends Omit<RecommendedRoute, 'option'> {
+  option?: number | null;
+}
+
+export interface RiskSources {
+  weather: string;
+  news: string;
+  analysis: string;
+}
+
+export interface RiskSnapshot {
+  risk?: number;
+  reason?: string;
+  components?: {
+    weather?: number;
+    news?: number;
+    geo?: number;
+  };
+  checked_at?: string;
+  sources?: RiskSources;
+}
+
 export interface RouteResponse {
   source: string;
   target: string;
@@ -43,8 +65,12 @@ export interface RouteResponse {
   dispatch_date: string;
   priority_level: string;
   recommended_routes: RecommendedRoute[];
-  node_risks: Record<string, any>;
+  node_risks: Record<string, RiskSnapshot>;
   city_coordinates?: Record<string, { lat: number; lng: number }>;
+  baseline_fastest_route?: ComparisonRoute | null;
+  baseline_safest_route?: ComparisonRoute | null;
+  risk_checked_at?: string;
+  risk_sources?: RiskSources;
   route?: RouteSegment[];
   total_transit_days?: number;
 }

@@ -13,6 +13,13 @@ interface HeaderProps {
 }
 
 export default function Header({ response, onBack, onShare, onExport, onSave, saving }: HeaderProps) {
+  const totalTransitDays = response.total_transit_days ?? response.recommended_routes[0]?.total_transit_days ?? 0;
+  const routeRiskLevel =
+    response.route?.reduce((maxRisk, segment) => Math.max(maxRisk, segment.risk_score || 0), 0) ??
+    response.recommended_routes[0]?.route_risk_level ??
+    0;
+  const totalCarbon = response.route?.reduce((sum, segment) => sum + (segment.carbon_kg || 0), 0) ?? 0;
+
   return (
     <>
       <div className="bg-gray-900 text-white shadow-lg border-b border-gray-800">
@@ -73,9 +80,17 @@ export default function Header({ response, onBack, onShare, onExport, onSave, sa
                 {response.source} → {response.target}
               </h1>
             </div>
-            <p className="text-xl opacity-90">
-              Total Transit Time: <span className="font-bold">{response.recommended_routes[0]?.total_transit_days || 0} days</span>
-            </p>
+            <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xl opacity-90">
+              <p>
+                Total Transit Time: <span className="font-bold">{totalTransitDays} days</span>
+              </p>
+              <p>
+                Route Risk: <span className="font-bold">{routeRiskLevel.toFixed(2)}</span>
+              </p>
+              <p>
+                Carbon: <span className="font-bold">{totalCarbon.toFixed(2)} kg</span>
+              </p>
+            </div>
           </div>
         </div>
       </div>
