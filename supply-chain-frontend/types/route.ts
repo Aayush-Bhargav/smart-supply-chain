@@ -69,6 +69,7 @@ export interface RouteResponse {
   city_coordinates?: Record<string, { lat: number; lng: number }>;
   baseline_fastest_route?: ComparisonRoute | null;
   baseline_safest_route?: ComparisonRoute | null;
+  baseline_cleanest_route?: ComparisonRoute | null;
   risk_checked_at?: string;
   risk_sources?: RiskSources;
   route?: RouteSegment[];

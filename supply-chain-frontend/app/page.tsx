@@ -245,9 +245,17 @@ export default function Home() {
                 {/* Chaos Engine Simulator */}
                 <div className="mt-8 p-6 bg-slate-900 border border-blue-500/30 rounded-xl">
                   <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xl font-bold text-red-400 flex items-center">
-                      ⚡ Chaos Engine Simulation
-                    </h3>
+                  <div className="flex-1 min-w-[300px]">
+                      <div className="flex items-center gap-3">
+                        <div className={`h-3 w-3 rounded-full ${isSimulationMode ? 'bg-red-500 animate-ping' : 'bg-gray-500'}`} />
+                        <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-white"> Chaos Simulator</h3>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {isSimulationMode 
+                          ? "Targeting specific nodes for synthetic disruption events." 
+                          : "System running on nominal real-world telemetry."}
+                      </p>
+                    </div>
                     <label className="relative inline-flex items-center cursor-pointer">
                       <input
                         type="checkbox"
@@ -268,7 +276,7 @@ export default function Home() {
                   {isSimulationMode && (
                     <div className="grid grid-cols-2 gap-4 animate-fadeIn">
                       <div>
-                        <label className="form-label text-gray-300">Target City</label>
+                        <label className="form-label !text-white">Target City</label>
                         <CityAutocomplete
                           value={formData.mock_disruption_city || ''}
                           onChange={(value) => handleInputChange('mock_disruption_city', value)}
@@ -276,7 +284,7 @@ export default function Home() {
                         />
                       </div>
                       <div>
-                        <label className="form-label text-gray-300">Disaster Type</label>
+                        <label className="form-label !text-white">Disaster Type</label>
                         <select
                           className="input-field bg-slate-800 text-white border-slate-700"
                           value={formData.mock_disruption_type || ''}

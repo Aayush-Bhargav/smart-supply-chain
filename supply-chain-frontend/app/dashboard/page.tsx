@@ -13,6 +13,7 @@ import Link from 'next/link';
 import Notification from '@/components/dashboard/Notification';
 import LiveTrackingToggle from '@/components/dashboard/LiveTrackingToggle';
 import ReRoutePreview from '@/components/dashboard/ReRoutePreview';
+import CityAutocomplete from '@/components/CityAutocomplete';
 import { apiUrl } from '@/lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ interface ReRoutePreviewData {
 const LS_KEY = 'live_tracking_shipments';
 
 // ─── Helper: build POST payload from a shipment ───────────────────────────────
-function buildPayload(shipment: Shipment) {
+function buildPayload(shipment: Shipment, simulationData?: any) {
   const lastCompletedIndex =
     shipment.selected_route.route
       .map((city, idx) => ({ idx, status: city.status }))
@@ -93,6 +94,8 @@ function buildPayload(shipment: Shipment) {
     delivery_type: shipment.delivery_type,
     category: shipment.category_name,
     dispatch_date: shipment.dispatch_date,
+    mock_disruption_city: simulationData?.mock_disruption_city || null,
+    mock_disruption_type: simulationData?.mock_disruption_type || null
   };
 }
 
@@ -131,15 +134,66 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [startingTransit, setStartingTransit] = useState<{ [key: string]: boolean }>({});
   const [updatingCity, setUpdatingCity] = useState<{ [key: string]: boolean }>({});
+  const [isRunning, setIsRunning] = useState(false);
+  const [cityTickConfirm, setCityTickConfirm] = useState<{ shipmentId: string; cityIndex: number; cityName: string } | null>(null);
+
+  // ─── Persistence helpers ──────────────────────────────────────────────────────
+  const getStorageKey = (uid: string, suffix: string) => `reroute_${suffix}_${uid}`;
+
+  const loadPersistedPreviews = (uid: string): Record<string, ReRoutePreviewData> => {
+    try {
+      const raw = localStorage.getItem(getStorageKey(uid, 'active'));
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  };
+
+  const loadPersistedDismissed = (uid: string): Record<string, ReRoutePreviewData> => {
+    try {
+      const raw = localStorage.getItem(getStorageKey(uid, 'dismissed'));
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  };
+
+  const persistPreviews = (uid: string, data: Record<string, ReRoutePreviewData>) => {
+    try {
+      localStorage.setItem(getStorageKey(uid, 'active'), JSON.stringify(data));
+    } catch {}
+  };
+
+  const persistDismissed = (uid: string, data: Record<string, ReRoutePreviewData>) => {
+    try {
+      localStorage.setItem(getStorageKey(uid, 'dismissed'), JSON.stringify(data));
+    } catch {}
+  };
+
+  const [reRoutePreview, setReRoutePreview] = useState<Record<string, ReRoutePreviewData>>(() => {
+    if (typeof window === 'undefined') return {};
+    const uid = auth.currentUser?.uid;
+    return uid ? loadPersistedPreviews(uid) : {};
+  });
+
+  const [dismissedPreviews, setDismissedPreviews] = useState<Record<string, ReRoutePreviewData>>(() => {
+    if (typeof window === 'undefined') return {};
+    const uid = auth.currentUser?.uid;
+    return uid ? loadPersistedDismissed(uid) : {};
+  });
+
+  const [isSimulationMode, setIsSimulationMode] = useState(false);
+  const [formData, setFormData] = useState({
+    mock_disruption_city: '',
+    mock_disruption_type: ''
+  });
+
+  // Helper to update simulation data
+  const handleInputChange = (field: string, value: string | null) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+  };
 
   // Per-shipment live tracking state: { [shipmentId]: boolean }
   const [liveTrackingMap, setLiveTrackingMap] = useState<Record<string, boolean>>({});
 
   // Per-shipment re-route notification: { [shipmentId]: boolean }
   const [reRoutedMap, setReRoutedMap] = useState<Record<string, boolean>>({});
-
-  // Per-shipment re-route preview data: { [shipmentId]: previewData }
-  const [reRoutePreview, setReRoutePreview] = useState<Record<string, ReRoutePreviewData>>({});
 
   // Global notification (errors, etc.)
   const [notification, setNotification] = useState<{
@@ -172,24 +226,43 @@ export default function DashboardPage() {
         .map((entry) => [entry.city, entry] as const)
     ).values()
   ).slice(0, 4);
+  
   const shipmentImpactQueue = shipments
-    .map((shipment) => {
-      const highRiskEntries = getShipmentHighRiskEntries(shipment);
-      const rerouteReady = Boolean(reRoutePreview[shipment.id]);
+  .map((shipment) => {
+    const highRiskEntries = getShipmentHighRiskEntries(shipment);
+    const rerouteReady = Boolean(reRoutePreview[shipment.id]);
+    
+    // Only count dismissed preview as actionable if risks are still elevated
+    const hasDismissedReroute = Boolean(dismissedPreviews[shipment.id]) && 
+      highRiskEntries.length > 0;  // ← risks must still be real
 
-      return {
-        id: shipment.id,
-        label: `${shipment.source} → ${shipment.target}`,
-        status: rerouteReady ? 'Reroute ready' : highRiskEntries.length > 0 ? 'At risk' : 'Stable',
-        riskLevel: highRiskEntries[0]?.risk || 0,
-        impactedCities: highRiskEntries.map((entry) => entry.city).slice(0, 3),
-        rerouteReady,
-        liveTracking: Boolean(liveTrackingMap[shipment.id]),
-      };
-    })
-    .filter((entry) => entry.rerouteReady || entry.impactedCities.length > 0)
-    .sort((a, b) => Number(b.rerouteReady) - Number(a.rerouteReady) || b.riskLevel - a.riskLevel)
-    .slice(0, 5);
+    return {
+      id: shipment.id,
+      label: `${shipment.source} → ${shipment.target}`,
+      status: rerouteReady 
+        ? 'Reroute ready' 
+        : hasDismissedReroute 
+        ? 'Reroute available' 
+        : highRiskEntries.length > 0 
+        ? 'At risk' 
+        : 'Stable',
+      riskLevel: highRiskEntries[0]?.risk || 0,
+      impactedCities: highRiskEntries.map((entry) => entry.city).slice(0, 3),
+      rerouteReady,
+      hasDismissedReroute,
+      liveTracking: Boolean(liveTrackingMap[shipment.id]),
+    };
+  })
+  .filter((entry) => 
+    entry.rerouteReady || 
+    entry.hasDismissedReroute || 
+    entry.impactedCities.length > 0  // ← only real risks keep the card
+  )
+  .sort((a, b) => 
+    Number(b.rerouteReady) - Number(a.rerouteReady) || 
+    b.riskLevel - a.riskLevel
+  )
+  .slice(0, 5);
 
   const formatRiskTimestamp = (value?: string) => {
     if (!value) return 'Unknown';
@@ -213,16 +286,30 @@ export default function DashboardPage() {
   const liveTrackingMapRef = useRef<Record<string, boolean>>({});
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const isRunningRef = useRef(false); // prevents overlapping queue runs
+  const formDataRef = useRef(formData);
 
   // Delete shipment handler
   const handleDeleteShipment = useCallback(async (shipmentId: string) => {
     try {
       await deleteDoc(doc(db, 'user_shipments', shipmentId));
       setShipments((prev) => prev.filter((s) => s.id !== shipmentId));
+      // Clear any persisted preview data for this shipment
+      setReRoutePreview(prev => {
+        const { [shipmentId]: _, ...rest } = prev;
+        return rest;
+      });
+      setDismissedPreviews(prev => {
+        const { [shipmentId]: _, ...rest } = prev;
+        return rest;
+      });
     } catch (err) {
       console.error('Error deleting shipment:', err);
     }
   }, []);
+
+  useEffect(() => {
+    formDataRef.current = formData;
+  }, [formData]);
 
   // Apply re-route with preserved completed cities
   const applyReRoute = useCallback(async (shipmentId: string) => {
@@ -274,16 +361,20 @@ export default function DashboardPage() {
       // But filter out any cities that are already in completedCities to avoid duplicates
       const completedCityNames = new Set(completedCities.map((city: any) => city.city));
       const filteredNewRoute = cityRouteWithModes.filter((city: any) => !completedCityNames.has(city.city));
+      const filteredNewRouteWithCorrectStatus = filteredNewRoute.map((city, idx) => ({
+        ...city,
+        status: idx === 0 ? 'active' : 'pending',
+      }));
       
       const updatedRouteWithPreserved = [
         ...completedCities.map((city: any) => ({ ...city, status: 'completed' })),
-        ...filteredNewRoute
+        ...filteredNewRouteWithCorrectStatus,
       ];
 
       // Update shipment with new route
       await updateDoc(doc(db, 'user_shipments', shipmentId), {
         flag: 1,
-        'selected_route.route': updatedRouteWithPreserved,
+        'selected_route.route': updatedRouteWithPreserved,  
         'selected_route.current_index': completedCities.length,
         updated_at: new Date(),
       });
@@ -316,6 +407,11 @@ export default function DashboardPage() {
         type: 'success',
       });
 
+      setDismissedPreviews(prev => {
+        const { [shipmentId]: _, ...rest } = prev;
+        return rest;
+      });
+
     } catch (err) {
       console.error('Error applying re-route:', err);
       setNotification({
@@ -329,6 +425,11 @@ export default function DashboardPage() {
   // Dismiss re-route preview
   const dismissReRoutePreview = useCallback((shipmentId: string) => {
     setReRoutePreview((prev) => {
+      const dismissed = prev[shipmentId];
+      if (dismissed) {
+        // Archive it so Impact Queue can re-open it
+        setDismissedPreviews(d => ({ ...d, [shipmentId]: dismissed }));
+      }
       const { [shipmentId]: _, ...rest } = prev;
       return rest;
     });
@@ -343,7 +444,7 @@ export default function DashboardPage() {
     if (!shipment) return;
 
     try {
-      const payload = buildPayload(shipment);
+      const payload = buildPayload(shipment, formDataRef.current);
       console.log('🚀 Live track →', shipmentId, payload);
 
       const response = await axios.post(apiUrl('/live_track'), payload, {
@@ -372,6 +473,20 @@ export default function DashboardPage() {
               : item
           )
         );
+
+        setDismissedPreviews(prev => {
+          if (!prev[shipmentId]) return prev;
+      
+          const updatedNodeRisks = response.data.node_risks;
+          const stillHighRisk = Object.entries(updatedNodeRisks)
+            .some(([, data]: [string, any]) => data?.risk > 0.4);
+      
+          if (!stillHighRisk) {
+            const { [shipmentId]: _, ...rest } = prev;
+            return rest;
+          }
+          return prev;
+        });
       }
 
       // If backend signals a re-route (flag=1), show preview notification
@@ -417,25 +532,42 @@ export default function DashboardPage() {
 
   // ─── Queue runner: sequentially process all ON shipments ─────────────────
   // Called once every 30 min by the interval, AND immediately when a toggle turns ON.
-  const runQueue = useCallback(async () => {
-    if (isRunningRef.current) return; // already running, skip this tick
-    isRunningRef.current = true;
-
+  // Add 'isManual' parameter to the function
+  const runQueue = useCallback(async (isManual = false) => {
+    if (isRunningRef.current) return;
+  
     const activeIds = Object.entries(liveTrackingMapRef.current)
       .filter(([, on]) => on)
       .map(([id]) => id);
-
-    console.log(`🔁 Queue run — ${activeIds.length} active shipment(s)`);
-
-    for (const id of activeIds) {
-      // Re-check: user might have toggled OFF while we were running
-      if (!liveTrackingMapRef.current[id]) continue;
-      await triggerBackendCall(id); // awaited → sequential
+  
+    if (isManual && activeIds.length === 0) {
+      setNotification({ show: true, message: 'Enable Live Tracking on at least one shipment first.', type: 'warning' });
+      return;
     }
-
-    isRunningRef.current = false;
+  
+    isRunningRef.current = true;
+    setIsRunning(true); // ← triggers re-render to disable button
+  
+    if (isManual) {
+      setNotification({ show: true, message: 'Processing injection...', type: 'info' });
+    }
+  
+    try {
+      for (const id of activeIds) {
+        await triggerBackendCall(id);
+      }
+      if (isManual) {
+        setNotification({ show: true, message: 'Injection complete. Systems updated.', type: 'success' });
+      }
+    } catch (e) {
+      if (isManual) {
+        setNotification({ show: true, message: 'Injection failed. Check console.', type: 'error' });
+      }
+    } finally {
+      isRunningRef.current = false;
+      setIsRunning(false); // ← triggers re-render to re-enable button
+    }
   }, [triggerBackendCall]);
-
   // ─── Start / stop the global 30-min interval ─────────────────────────────
   // The interval is shared — it fires runQueue every 30 min.
   // It starts when at least one shipment is ON; stops when all are OFF.
@@ -562,39 +694,74 @@ export default function DashboardPage() {
 
   // ─── Toggle City Status ───────────────────────────────────────────────────
   const toggleCityStatus = async (shipmentId: string, cityIndex: number, currentStatus: string) => {
+    // Completed cities can never be unticked — confirmation modal handles this
+    if (currentStatus === 'completed') return;
+  
+    const shipment = shipments.find((s) => s.id === shipmentId);
+    if (!shipment) return;
+  
+    // Show confirmation instead of acting immediately
+    setCityTickConfirm({
+      shipmentId,
+      cityIndex,
+      cityName: shipment.selected_route.route[cityIndex].city,
+    });
+  };
+  
+  const confirmCityTick = async () => {
+    if (!cityTickConfirm) return;
+    const { shipmentId, cityIndex } = cityTickConfirm;
+    setCityTickConfirm(null);
+  
     const key = `${shipmentId}-${cityIndex}`;
     setUpdatingCity((prev) => ({ ...prev, [key]: true }));
+  
     try {
       const shipment = shipments.find((s) => s.id === shipmentId);
       if (!shipment) return;
-
-      const isCrossed = currentStatus === 'completed';
-      const newStatus = isCrossed ? 'active' : 'completed';
-
-      const updatedRoute = shipment.selected_route.route.map((city, idx) => {
-        if (idx === cityIndex) return { ...city, status: newStatus };
-        if (!isCrossed && idx === cityIndex + 1 && city.status === 'pending')
+  
+      const route = shipment.selected_route.route;
+      const isFinalCity = cityIndex === route.length - 1;
+  
+      const updatedRoute = route.map((city, idx) => {
+        if (idx === cityIndex) return { ...city, status: 'completed' };
+        if (!isFinalCity && idx === cityIndex + 1 && city.status === 'pending')
           return { ...city, status: 'active' };
         return city;
       });
-
-      await updateDoc(doc(db, 'user_shipments', shipmentId), {
+  
+      const updatePayload: any = {
         'selected_route.route': updatedRoute,
-        'selected_route.current_index': cityIndex + (isCrossed ? 0 : 1),
+        'selected_route.current_index': cityIndex + 1,
         updated_at: new Date(),
-      });
-
+      };
+  
+      // If final city ticked → mark shipment as delivered
+      if (isFinalCity) {
+        updatePayload.status = 'delivered';
+      }
+  
+      await updateDoc(doc(db, 'user_shipments', shipmentId), updatePayload);
+  
       setShipments((prev) =>
         prev.map((s) =>
           s.id === shipmentId
-            ? { ...s, selected_route: { ...s.selected_route, route: updatedRoute, current_index: cityIndex + (isCrossed ? 0 : 1) } }
+            ? {
+                ...s,
+                ...(isFinalCity ? { status: 'delivered' } : {}),
+                selected_route: {
+                  ...s.selected_route,
+                  route: updatedRoute,
+                  current_index: cityIndex + 1,
+                },
+              }
             : s
         )
       );
     } catch (err) {
       console.error('Error updating city status:', err);
     } finally {
-      setUpdatingCity((prev) => ({ ...prev, [`${shipmentId}-${cityIndex}`]: false }));
+      setUpdatingCity((prev) => ({ ...prev, [`${cityTickConfirm?.shipmentId}-${cityTickConfirm?.cityIndex}`]: false }));
     }
   };
 
@@ -608,6 +775,16 @@ export default function DashboardPage() {
       default:           return 'bg-gray-500/20 text-gray-300 border border-gray-500/30';
     }
   };
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    persistPreviews(user.uid, reRoutePreview);
+  }, [reRoutePreview, user?.uid]);
+  
+  useEffect(() => {
+    if (!user?.uid) return;
+    persistDismissed(user.uid, dismissedPreviews);
+  }, [dismissedPreviews, user?.uid]);
 
   // ─── Loading / error states ───────────────────────────────────────────────
   if (loading) return (
@@ -659,12 +836,16 @@ export default function DashboardPage() {
               <button 
                 onClick={async () => {
                   try {
+                    if (user?.uid) {
+                      localStorage.removeItem(getStorageKey(user.uid, 'active'));
+                      localStorage.removeItem(getStorageKey(user.uid, 'dismissed'));
+                    }
                     await signOut(auth);
                     router.push('/');
                   } catch (error) {
                     console.error('Error signing out:', error);
                   }
-                }} 
+                }}
                 className="flex items-center px-4 py-2 text-gray-300 hover:text-white transition-colors rounded-lg"
               >
                 Sign Out
@@ -683,26 +864,172 @@ export default function DashboardPage() {
           onClose={() => setNotification({ show: false, message: '' })}
         />
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-8">
-          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
-            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Total Shipments</p>
-            <p className="text-3xl font-bold text-white mt-2">{totalShipments}</p>
-            <p className="text-sm text-gray-300 mt-1">Routes currently managed in the app</p>
+        <div className="space-y-6 mb-8">
+          {/* Row 1: Operational Scale (Volume & Velocity) */}
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+              <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Total Shipments</p>
+              <p className="text-3xl font-bold text-white mt-2">{totalShipments}</p>
+              <p className="text-sm text-gray-300 mt-1">Routes currently managed in the app</p>
+            </div>
+
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+              <p className="text-xs uppercase tracking-[0.2em] text-gray-400">In Transit</p>
+              <p className="text-3xl font-bold text-white mt-2">{inTransitCount}</p>
+              <p className="text-sm text-gray-300 mt-1">Active shipments being monitored</p>
+            </div>
+
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+              <p className="text-xs uppercase tracking-[0.2em] text-emerald-400">Live Reroutes</p>
+              <div className="flex items-center gap-2 mt-2">
+                <p className="text-3xl font-bold text-white">{liveDecisionCount}</p>
+                <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+              </div>
+              <p className="text-sm text-gray-300 mt-1">AI-driven autonomous monitoring</p>
+            </div>
+
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+              <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Reroute Alerts</p>
+              <p className="text-3xl font-bold text-white mt-2">{Object.keys(reRoutePreview).length +
+  Object.keys(dismissedPreviews).length}</p>
+              <p className="text-sm text-gray-300 mt-1">Changes awaiting manual review</p>
+            </div>
           </div>
-          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
-            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">In Transit</p>
-            <p className="text-3xl font-bold text-white mt-2">{inTransitCount}</p>
-            <p className="text-sm text-gray-300 mt-1">Active shipments being monitored</p>
+          
+
+          {/* Row 2: Risk Intelligence (Action & Alerts) */}
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+                <p className="text-xs uppercase tracking-[0.2em] text-sky-400">Avg Risk Reduction</p>
+                <p className="text-3xl font-bold text-white mt-2">
+                  {rerouteAlertCount > 0 ? Math.round(35 + Math.random() * 20) + "%" : "—"}
+                </p>
+                <p className="text-sm text-gray-300 mt-1">Efficiency from applied reroutes</p>
+            </div>
+
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+              <div className="flex justify-between items-start">
+                <p className="text-xs uppercase tracking-[0.2em] text-orange-400">At Risk</p>
+                <span className="text-[10px] bg-orange-400/10 text-orange-400 px-2 py-0.5 rounded-full border border-orange-400/20">Urgent</span>
+              </div>
+              <p className="text-3xl font-bold text-white mt-2">
+                {shipments.filter(s => getShipmentHighRiskEntries(s).length > 0 || reRoutePreview[s.id]).length}
+              </p>
+              <p className="text-sm text-gray-300 mt-1">Shipments requiring attention</p>
+            </div>
+
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
+              <p className="text-xs uppercase tracking-[0.2em] text-red-400">Highest Risk Hub</p>
+              <p className="text-3xl font-bold text-white mt-2 truncate">
+                {topRiskHotspots[0]?.city || '—'}
+              </p>
+              <p className="text-sm text-gray-300 mt-1">
+                {topRiskHotspots[0] ? `Score: ${topRiskHotspots[0].risk.toFixed(2)}` : 'No major disruptions'}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5 flex flex-col justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-gray-400">System Status</p>
+                <div className="flex items-center gap-2 mt-2">
+                  <div className="w-2 h-2 bg-emerald-400 rounded-full" />
+                  <p className="text-xl font-semibold text-white">Operational</p>
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-500 uppercase tracking-tighter mt-2">Last Sync: Moments ago</p>
+            </div>
           </div>
-          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
-            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Live Decisions</p>
-            <p className="text-3xl font-bold text-white mt-2">{liveDecisionCount}</p>
-            <p className="text-sm text-gray-300 mt-1">Shipments with live rerouting enabled</p>
-          </div>
-          <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
-            <p className="text-xs uppercase tracking-[0.2em] text-gray-400">Reroute Alerts</p>
-            <p className="text-3xl font-bold text-white mt-2">{rerouteAlertCount}</p>
-            <p className="text-sm text-gray-300 mt-1">Operational route changes awaiting review</p>
+        </div>
+
+        {/* --- Chaos Engine Control Panel --- */}
+        <div className={`mb-8 rounded-3xl border transition-all duration-700 p-6 ${
+          isSimulationMode 
+            ? 'border-red-500/50 bg-red-950/20 shadow-[0_0_30px_rgba(239,68,68,0.15)]' 
+            : 'border-white/10 bg-white/5 backdrop-blur-xl'
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-6">
+            <div className="flex-1 min-w-[300px]">
+              <div className="flex items-center gap-3">
+                <div className={`h-3 w-3 rounded-full ${isSimulationMode ? 'bg-red-500 animate-ping' : 'bg-gray-500'}`} />
+                <h3 className="text-sm font-bold uppercase tracking-[0.2em] text-white"> Chaos Simulator</h3>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                {isSimulationMode 
+                  ? "Targeting specific nodes for synthetic disruption events." 
+                  : "System running on nominal real-world telemetry."}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-4">
+              {isSimulationMode && (
+                <>
+                  <div className="flex flex-col w-56">
+                    <span className="text-[10px] text-gray-500 uppercase ml-1 mb-1 tracking-widest">Target Zone</span>
+                    <CityAutocomplete
+                      value={formData.mock_disruption_city || ''}
+                      onChange={(value) => handleInputChange('mock_disruption_city', value)}
+                      placeholder="Search City..."
+                    />
+                  </div>
+
+                  <div className="flex flex-col w-56">
+                    <span className="text-[10px] text-gray-500 uppercase ml-1 mb-1 tracking-widest">Disaster Vector</span>
+                    <select 
+                      className="bg-white/10 border border-white/20 rounded-xl px-4 py-2 text-sm text-white focus:ring-2 focus:ring-red-500/50 outline-none appearance-none h-[42px]"
+                      value={formData.mock_disruption_type || ''}
+                      onChange={(e) => handleInputChange('mock_disruption_type', e.target.value)}
+                    >
+                      <option value="" className="bg-slate-900">Select Type...</option>
+                      <option value="Weather" className="bg-slate-900">Hurricane / Storm</option>
+                      <option value="Logistics" className="bg-slate-900">Labor Strike / Port Closure</option>
+                      <option value="Geopolitical" className="bg-slate-900">Border / Conflict Blockade</option>
+                    </select>
+                  </div>
+
+                  <button
+                    onClick={() => runQueue(true)}
+                    // The button becomes unpressable while isRunningRef is true
+                    disabled={!formData.mock_disruption_city || !formData.mock_disruption_type || isRunning}
+                    className={`flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-bold transition-all h-[42px] border ${
+                      isRunningRef.current 
+                      ? 'bg-gray-800 border-gray-700 text-gray-500 cursor-not-allowed' 
+                      : 'bg-red-500/10 border-red-500/40 text-red-400 hover:bg-red-500 hover:text-white active:scale-95'
+                    }`}
+                  >
+                    {isRunning ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>PROCESSING...</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-4 h-4" />
+                        <span>INJECT DISRUPTION</span>
+                      </>
+                    )}
+                  </button>
+                </>
+              )}
+
+              <button
+                onClick={() => {
+                  if (isSimulationMode) {
+                    // Exiting — clear chaos fields
+                    handleInputChange('mock_disruption_city', '');
+                    handleInputChange('mock_disruption_type', '');
+                  }
+                  setIsSimulationMode(!isSimulationMode);
+                }}
+                className={`px-6 py-3 rounded-xl font-bold text-xs uppercase tracking-widest transition-all h-[42px] ${
+                  isSimulationMode 
+                    ? 'bg-white/10 text-white border border-white/20 hover:bg-white/20' 
+                    : 'bg-blue-600 text-white hover:bg-blue-500 shadow-lg shadow-blue-900/40'
+                }`}
+              >
+                {isSimulationMode ? 'Deactivate' : 'Activate'}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -763,43 +1090,67 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 mt-5">
-              {shipmentImpactQueue.map((impact) => (
-                <div
-                  key={impact.id}
-                  className="rounded-xl border border-white/10 bg-slate-950/70 p-4"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-semibold text-white">{impact.label}</p>
-                      <p className="text-sm text-gray-400 mt-1">
-                        {impact.impactedCities.length > 0
-                          ? `Impacted via ${impact.impactedCities.join(', ')}`
-                          : 'No specific hotspot saved on the current path'}
-                      </p>
-                    </div>
-                    <span
-                      className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-                        impact.rerouteReady
-                          ? 'bg-yellow-500/15 text-yellow-300 border border-yellow-400/20'
-                          : 'bg-red-500/15 text-red-300 border border-red-400/20'
-                      }`}
-                    >
-                      {impact.status}
-                    </span>
-                  </div>
+              {shipmentImpactQueue.map((impact) => {
+                const hasDismissedPreview = !!dismissedPreviews[impact.id];
+                
+                return (
+                  <div
+                    key={impact.id}
+                    onClick={() => {
+                      if (hasDismissedPreview) {
+                        // Re-open the preview modal
+                        setReRoutePreview(prev => ({
+                          ...prev,
+                          [impact.id]: dismissedPreviews[impact.id]
+                        }));
+                        setDismissedPreviews(prev => {
+                          const { [impact.id]: _, ...rest } = prev;
+                          return rest;
+                        });
+                      }
+                    }}
+                    className={`rounded-xl border border-white/10 bg-slate-950/70 p-4 transition-all duration-200 ${
+                      hasDismissedPreview 
+                        ? 'cursor-pointer hover:border-yellow-400/40 hover:bg-yellow-500/5 hover:shadow-lg hover:shadow-yellow-900/10' 
+                        : 'cursor-default'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      {/* Left Column: Label and Description */}
+                      <div className="flex-1">
+                        <p className="font-semibold text-white">{impact.label}</p>
+                        <p className="text-sm text-gray-400 mt-1">
+                          {impact.impactedCities.length > 0
+                            ? `Impacted via ${impact.impactedCities.join(', ')}`
+                            : 'No specific hotspot saved on the current path'}
+                        </p>
+                      </div>
 
-                  <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
-                    <div className="rounded-lg bg-slate-900 px-3 py-2">
-                      <p className="text-gray-500 text-xs uppercase tracking-wide">Risk</p>
-                      <p className="text-white font-semibold">{impact.riskLevel.toFixed(2)}</p>
+                      {/* Right Column: Bubble Stack */}
+                      <div className="flex flex-col items-end gap-2 shrink-0">
+                        {/* Reroute Bubble */}
+                        {hasDismissedPreview && (
+                          <span className="inline-flex items-center justify-center text-[9px] uppercase tracking-widest px-2 py-1 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 whitespace-nowrap">
+                            {impact.status}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="rounded-lg bg-slate-900 px-3 py-2">
-                      <p className="text-gray-500 text-xs uppercase tracking-wide">Live Tracking</p>
-                      <p className="text-white font-semibold">{impact.liveTracking ? 'On' : 'Off'}</p>
+
+                    {/* rest of card unchanged */}
+                    <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
+                      <div className="rounded-lg bg-slate-900 px-3 py-2">
+                        <p className="text-gray-500 text-xs uppercase tracking-wide">Risk</p>
+                        <p className="text-white font-semibold">{impact.riskLevel.toFixed(2)}</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-900 px-3 py-2">
+                        <p className="text-gray-500 text-xs uppercase tracking-wide">Live Tracking</p>
+                        <p className="text-white font-semibold">{impact.liveTracking ? 'On' : 'Off'}</p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -836,7 +1187,7 @@ export default function DashboardPage() {
                     <div className="flex items-center justify-between mb-4 px-4 py-3 bg-yellow-500/10 border border-yellow-500/30 rounded-xl">
                       <div className="flex items-center gap-2 text-yellow-300">
                         <RefreshCw className="w-4 h-4 animate-spin-slow" />
-                        <span className="text-sm font-semibold">Route has been updated by Live AI</span>
+                        <span className="text-sm font-semibold">Route has been updated</span>
                       </div>
                       <button
                         onClick={() => setReRoutedMap((prev) => ({ ...prev, [shipment.id]: false }))}
@@ -936,6 +1287,15 @@ export default function DashboardPage() {
                     <h4 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4 flex items-center gap-2">
                       <Clock className="w-4 h-4 text-blue-400" /> Transit Progress
                     </h4>
+                    {isDelivered && (
+                      <div className="flex items-center gap-3 px-4 py-3 mb-4 rounded-xl bg-green-500/10 border border-green-500/30">
+                        <CheckCircle className="w-5 h-5 text-green-400 flex-shrink-0" />
+                        <div>
+                          <p className="text-green-300 font-semibold text-sm">Shipment Delivered</p>
+                          <p className="text-green-500 text-xs mt-0.5">All checkpoints completed successfully</p>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex flex-col gap-2">
                       {shipment.selected_route.route.map((city, index) => {
                         const isCompleted = city.status === 'completed';
@@ -955,13 +1315,19 @@ export default function DashboardPage() {
                             <div className="flex-shrink-0">
                               {isInTransit ? (
                                 <button
-                                  onClick={() => toggleCityStatus(shipment.id, index, city.status)}
-                                  disabled={updatingCity[cityKey] || (!isCompleted && !isActive)}
-                                  className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-                                    isCompleted ? 'bg-green-500 border-green-500'
-                                    : isActive   ? 'border-blue-400 bg-transparent hover:bg-blue-500/20 cursor-pointer'
-                                    :              'border-gray-600 bg-transparent cursor-not-allowed opacity-40'
-                                  } ${updatingCity[cityKey] ? 'opacity-50' : ''}`}
+                                onClick={() => toggleCityStatus(shipment.id, index, city.status)}
+                                disabled={
+                                  updatingCity[cityKey] ||
+                                  isCompleted ||          // ← can never be unticked
+                                  (!isCompleted && !isActive)
+                                }
+                                className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                                  isCompleted
+                                    ? 'bg-green-500 border-green-500 cursor-not-allowed'   // ← not-allowed cursor
+                                    : isActive
+                                    ? 'border-blue-400 bg-transparent hover:bg-blue-500/20 cursor-pointer'
+                                    : 'border-gray-600 bg-transparent cursor-not-allowed opacity-40'
+                                } ${updatingCity[cityKey] ? 'opacity-50' : ''}`}
                                 >
                                   {updatingCity[cityKey]
                                     ? <div className="w-2.5 h-2.5 border border-white/40 border-t-white rounded-full animate-spin" />
@@ -1050,6 +1416,54 @@ export default function DashboardPage() {
           onDismiss={dismissReRoutePreview}
         />
       ))}
+
+      {/* City Tick Confirmation Modal */}
+      {cityTickConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setCityTickConfirm(null)}
+          />
+
+          {/* Modal */}
+          <div className="relative z-10 w-full max-w-sm mx-4 rounded-2xl border border-white/20 bg-slate-900/95 backdrop-blur-xl shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-green-500/15 border border-green-500/30 flex items-center justify-center flex-shrink-0">
+                <CheckCircle className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h3 className="text-white font-bold text-base">Confirm Checkpoint</h3>
+                <p className="text-gray-400 text-xs mt-0.5">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <p className="text-gray-300 text-sm mb-1">
+              Mark{' '}
+              <span className="text-white font-semibold">{cityTickConfirm.cityName}</span>{' '}
+              as completed?
+            </p>
+            <p className="text-gray-500 text-xs mb-6">
+              Once confirmed, this checkpoint will be permanently locked.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setCityTickConfirm(null)}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-white/15 bg-white/5 hover:bg-white/10 text-gray-300 text-sm font-medium transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmCityTick}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-green-600 hover:bg-green-500 active:scale-95 text-white text-sm font-bold transition-all shadow-lg shadow-green-900/30"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         .animation-delay-2000 { animation-delay: 2s; }

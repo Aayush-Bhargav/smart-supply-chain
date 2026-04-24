@@ -94,7 +94,7 @@ ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",") if os.getenv("ALL
 
 # Gemini configuration
 genai.configure(api_key=GEMINI_API_KEY)
-decision_model = genai.GenerativeModel("gemini-2.5-flash")
+decision_model = genai.GenerativeModel("gemini-3.1-flash-lite-preview")
 
 # Risk cache
 RISK_CACHE = {}

@@ -69,6 +69,9 @@ export default function ControlTowerInsights({
   selectedRouteIndex,
   recommendedOption,
 }: ControlTowerInsightsProps) {
+  console.log('Full Response Object:', response);
+  console.log('Node Risks Data:', response.node_risks);
+  
   const selectedRoute = response.recommended_routes[selectedRouteIndex];
   const aiRecommendedRoute =
     response.recommended_routes.find((route) => route.option === recommendedOption) ?? selectedRoute;
@@ -78,8 +81,12 @@ export default function ControlTowerInsights({
   const derivedSafestRoute = response.recommended_routes.reduce((best, route) =>
     route.route_risk_level < best.route_risk_level ? route : best
   );
+  const derivedCleanestRoute = response.recommended_routes.reduce((best, route) =>
+    route.total_carbon_kg < best.total_carbon_kg ? route : best
+  );
   const fastestRoute = response.baseline_fastest_route ?? derivedFastestRoute;
   const safestRoute = response.baseline_safest_route ?? derivedSafestRoute;
+  const cleanestRoute = response.baseline_cleanest_route ?? derivedSafestRoute;
 
   const routeCities = extractRouteCities(selectedRoute.route);
   const riskHotspots = routeCities.reduce<RiskEntry[]>((entries, city) => {
@@ -108,41 +115,39 @@ export default function ControlTowerInsights({
   const isRecommended = recommendedOption === selectedRoute.option;
   const riskSources = response.risk_sources
     ? Object.values(response.risk_sources)
-    : ['OpenWeatherMap', 'GNews', 'Gemini 2.5 Flash'];
+    : ['OpenWeatherMap', 'GNews', 'Gemini 2.5 Flash Lite'];
   const aiMatchesFastest = routeSignature(aiRecommendedRoute) === routeSignature(fastestRoute);
   const aiMatchesSafest = routeSignature(aiRecommendedRoute) === routeSignature(safestRoute);
+  const aiMatchesCleanest = routeSignature(aiRecommendedRoute) === routeSignature(cleanestRoute);
   const operationalBaselines = [
     {
       label: 'Fastest baseline',
       accent: 'text-blue-300',
       border: 'border-blue-400/20 bg-blue-500/10',
       route: fastestRoute,
-      summary:
-        aiMatchesFastest
-          ? 'Matches the AI recommendation on speed.'
-          : 'Optimizes for transit time first.',
+      summary: aiMatchesFastest
+        ? 'Optimized for the shortest transit time currently available.'
+        : 'Prioritizes maximum speed to reduce lead times.',
     },
     {
       label: 'Safest baseline',
-      accent: 'text-emerald-300',
-      border: 'border-emerald-400/20 bg-emerald-500/10',
-      route: safestRoute,
-      summary:
-        aiMatchesSafest
-          ? 'Matches the AI recommendation on resilience.'
-          : 'Minimizes exposure to current disruption risk.',
-    },
-    {
-      label: 'AI-selected route',
       accent: 'text-violet-300',
       border: 'border-violet-400/20 bg-violet-500/10',
-      route: aiRecommendedRoute,
-      summary:
-        aiMatchesFastest
-          ? 'AI agrees that the fastest route is the best tradeoff.'
-          : aiMatchesSafest
-          ? 'AI prioritizes resilience over raw speed.'
-          : 'AI chooses a tradeoff route between speed and resilience.',
+      route: safestRoute,
+      summary: aiMatchesFastest
+        ? 'This route provides the best balance between speed and reliability.'
+        : aiMatchesSafest
+        ? 'Optimized for maximum security and risk avoidance.'
+        : 'Strategically bypasses high-risk areas to ensure cargo security.',
+    },
+    {
+      label: 'Greenest baseline',
+      accent: 'text-emerald-300',
+      border: 'border-emerald-400/20 bg-emerald-500/10',
+      route: cleanestRoute,
+      summary: aiMatchesCleanest
+        ? 'Optimized for minimum carbon output and environmental impact.'
+        : 'Prioritizes sustainability by selecting lower-emission transit modes.',
     },
   ];
 
@@ -242,15 +247,16 @@ export default function ControlTowerInsights({
                 <div className="grid grid-cols-3 gap-2 mt-4 text-sm">
                   <div className="bg-slate-900/70 rounded-lg px-3 py-2">
                     <p className="text-slate-500 text-xs uppercase tracking-wide">Time</p>
-                    <p className="text-white font-semibold">{baseline.route.total_transit_days}d</p>
+                    <p className="text-white font-semibold">{baseline.route.total_transit_days} Days</p>
                   </div>
                   <div className="bg-slate-900/70 rounded-lg px-3 py-2">
                     <p className="text-slate-500 text-xs uppercase tracking-wide">Risk</p>
                     <p className="text-white font-semibold">{baseline.route.route_risk_level}</p>
                   </div>
+
                   <div className="bg-slate-900/70 rounded-lg px-3 py-2">
-                    <p className="text-slate-500 text-xs uppercase tracking-wide">Hotspots</p>
-                    <p className="text-white font-semibold">{riskyCities.length}</p>
+                    <p className="text-slate-500 text-xs uppercase tracking-wide">Carbon</p>
+                    <p className="text-white font-semibold">{baseline.route.total_carbon_kg} kg</p>
                   </div>
                 </div>
 
@@ -261,7 +267,7 @@ export default function ControlTowerInsights({
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-[1.4fr,1fr] gap-6 mt-6">
+      <div className="grid lg:grid-cols gap-6 mt-6">
         <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
           <div className="flex items-center gap-2 mb-4">
             <ShieldAlert className="w-5 h-5 text-amber-400" />
@@ -318,7 +324,7 @@ export default function ControlTowerInsights({
         </div>
 
         <div className="space-y-4">
-          <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
+          {/* <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
             <div className="flex items-center gap-2 mb-4">
               <TimerReset className="w-5 h-5 text-blue-400" />
               <h3 className="text-lg font-semibold text-white">Operational Flags</h3>
@@ -345,9 +351,9 @@ export default function ControlTowerInsights({
                 </p>
               </div>
             </div>
-          </div>
+          </div> */}
 
-          <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
+          {/* <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
             <h3 className="text-lg font-semibold text-white mb-4">Option Comparison</h3>
             <div className="space-y-3">
               {response.recommended_routes.map((route) => {
@@ -378,7 +384,7 @@ export default function ControlTowerInsights({
                 );
               })}
             </div>
-          </div>
+          </div> */}
         </div>
       </div>
     </div>

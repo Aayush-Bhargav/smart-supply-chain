@@ -59,7 +59,7 @@ export default function ReRoutePreview({
             </div>
             <div>
               <h3 className="text-lg font-semibold text-gray-900">Route Update Available</h3>
-              <p className="text-sm text-gray-600">{message}</p>
+              {/* <p className="text-sm text-gray-600">{message}</p> */}
             </div>
           </div>
           <button

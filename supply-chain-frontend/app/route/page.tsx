@@ -264,6 +264,83 @@ export default function RoutePage() {
             </div>
           </div>
         )}
+
+        {/* ── Route option tabs ── */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 w-full">
+  {response.recommended_routes.map((opt, idx) => (
+    <button
+      key={idx}
+      onClick={() => setSelectedRouteIndex(idx)}
+      className={`relative flex flex-col p-5 rounded-2xl border transition-all duration-300 text-left w-full group ${
+        selectedRouteIndex === idx
+          ? 'bg-slate-800 border-blue-500 shadow-xl shadow-blue-900/20 ring-1 ring-blue-500/50'
+          : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/40'
+      }`}
+    >
+      {/* Top Right Highlight Dot */}
+      {selectedRouteIndex === idx && (
+        <div className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-blue-500 rounded-full border-2 border-slate-900 z-10 shadow-lg shadow-blue-500/50" />
+      )}
+
+      {/* Header Row: Option & Transit Time */}
+      <div className="flex justify-between items-end mb-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500 mb-1">Logistics Path</p>
+          <h3 className="text-xl font-bold text-white leading-none">Option {opt.option}</h3>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] font-bold uppercase tracking-tight text-blue-500/80">Est. Time</p>
+          <p className="text-lg font-semibold text-slate-100 leading-none">{opt.total_transit_days} Days</p>
+        </div>
+      </div>
+
+      {/* Simple Divider */}
+      <div className="h-px w-full bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800 mb-4" />
+
+      {/* Clean Route Path */}
+      <div className="flex flex-wrap items-center gap-y-3">
+        {opt.route.map((segment, sIdx) => (
+          <div key={sIdx} className="flex items-center">
+            {/* From City */}
+            <span className="text-[13px] font-medium text-slate-200">
+              {segment.from}
+            </span>
+            
+            {/* Mode Icon & Arrow */}
+            <div className="flex flex-col items-center px-3 text-slate-500">
+              <span className="text-xs mb-0.5 filter grayscale group-hover:grayscale-0 transition-all">
+                {segment.mode === 'Truck' && '🚚'}
+                {segment.mode === 'Ocean' && '🚢'}
+                {segment.mode === 'Air' && '✈️'}
+                {segment.mode === 'Rail' && '🚂'}
+              </span>
+              <div className="h-[2px] w-4 bg-slate-700 rounded-full" />
+            </div>
+
+            {/* If it's the last segment, show the final Destination */}
+            {sIdx === opt.route.length - 1 && (
+              <span className="text-[13px] font-medium text-slate-200">
+                {segment.to}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Subtle Hotspot Indicator (if any exist) */}
+      {opt.route.some(s => (s.risk_score || 0) > 0.4) && (
+        <div className="mt-4 flex items-center gap-1.5">
+          <div className="flex -space-x-1">
+            {opt.route.filter(s => (s.risk_score || 0) > 0.4).map((_, i) => (
+              <div key={i} className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.6)]" />
+            ))}
+          </div>
+          <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">Security Alert</span>
+        </div>
+      )}
+    </button>
+  ))}
+</div>
         <div className="mb-8">
           <ControlTowerInsights
             response={response}
@@ -282,31 +359,6 @@ export default function RoutePage() {
     </div>
   </div>
 )}
-        {/* ── Route option tabs ── */}
-        <div className="flex gap-4 mb-6">
-          {response.recommended_routes.map((opt, idx) => (
-            <button
-              key={idx}
-              onClick={() => setSelectedRouteIndex(idx)}
-              className={`flex-1 p-4 rounded-xl border transition-all ${
-                selectedRouteIndex === idx
-                  ? 'bg-blue-600 border-blue-400 shadow-[0_0_20px_rgba(37,99,235,0.4)]'
-                  : 'bg-slate-900 border-slate-700 hover:bg-slate-800'
-              }`}
-            >
-              <div className="text-lg font-bold text-white">Option {opt.option}</div>
-              <div className="text-sm text-gray-300">
-                {opt.total_transit_days} Days · Risk: {opt.route_risk_level}
-              </div>
-              <div className="text-xs text-green-400 mt-1">
-                CO2: {opt.total_carbon_kg || 0} kg
-              </div>
-              <div className="text-xs text-slate-400 mt-1">
-                Hotspots: {opt.route.filter((segment) => (segment.risk_score || 0) > 0.4).length}
-              </div>
-            </button>
-          ))}
-        </div>
 
         {/* ── Main content grid ── */}
         <div className="grid lg:grid-cols-3 gap-8">

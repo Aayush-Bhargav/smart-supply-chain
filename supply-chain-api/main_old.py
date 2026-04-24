@@ -63,7 +63,7 @@ if ENVIRONMENT != "production" and not ALLOWED_ORIGINS:
 # risk_engine.py has its OWN genai.configure() + risk_model instance.
 # This client is only for /select_best_route.
 genai.configure(api_key=GEMINI_API_KEY)
-decision_model = genai.GenerativeModel("gemini-2.5-flash")
+decision_model = genai.GenerativeModel("gemini-3.1-flash-lite-preview")
 
 # ── Global risk cache ──
 # { "City Name": {"data": risk_dict, "timestamp": float} }
@@ -72,7 +72,7 @@ CACHE_TTL_SECONDS = 1800  # 30 minutes
 RISK_SIGNAL_SOURCES = {
     "weather": "OpenWeatherMap",
     "news": "GNews",
-    "analysis": "Gemini 2.5 Flash",
+    "analysis": "Gemini 2.5 Flash Lite",
 }
 
 # ============================================================
@@ -297,7 +297,7 @@ edge_in_dim = edge_attr_tensor.shape[1]
 ml_model    = RobustSupplyChainSAGE(node_in_dim, edge_in_dim, 128, 4)
 
 try:
-    ml_model.load_state_dict(torch.load(MODEL_FILE, map_location="cpu"))
+    ml_model.load_state_dict(torch.jit.load(MODEL_FILE, map_location="cpu"))
     print(f"✅ Model loaded successfully. Node dim: {node_in_dim}, Edge dim: {edge_in_dim}")
 except RuntimeError as e:
     print(f"⚠️ Model architecture mismatch: {e}")
@@ -405,6 +405,8 @@ class LiveTrackRequest(BaseModel):
     delivery_type: str
     category: str
     dispatch_date: str
+    mock_disruption_city: str
+    mock_disruption_type: str
 
 # ============================================================
 # ROUTE BUILDING HELPERS
@@ -801,28 +803,37 @@ def health_check():
 
 @app.post("/find_route")
 def find_route(query: RouteRequest):
-    # ── Validate cities ──
-    if query.source_city not in city_to_id:
-        raise HTTPException(status_code=404, detail=f"Source city '{query.source_city}' not found.")
-    if query.target_city not in city_to_id:
-        raise HTTPException(status_code=404, detail=f"Destination city '{query.target_city}' not found.")
+    # ── 1. Validate cities ──
+    if query.source_city not in city_to_id or query.target_city not in city_to_id:
+        raise HTTPException(status_code=404, detail="Source or Destination not found.")
 
-    # ── Validate transit hubs (raise 400 instead of silently dropping) ──
-    hub_ids = []
-    for hub in (query.transit_hubs or []):
-        if hub not in city_to_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Transit hub '{hub}' was not found in the routing graph. "
-                       "Please check the city name and try again."
-            )
-        hub_ids.append(city_to_id[hub])
-
-    src_id    = city_to_id[query.source_city]
-    tgt_id    = city_to_id[query.target_city]
+    src_id = city_to_id[query.source_city]
+    tgt_id = city_to_id[query.target_city]
+    hub_ids = [city_to_id[h] for h in (query.transit_hubs or []) if h in city_to_id]
     waypoints = [src_id] + hub_ids + [tgt_id]
 
-    # ── PASS 1: ML baseline ──
+    # ── 2. PRE-ROUTE RISK ASSESSMENT (NEW PLACEMENT) ──
+    current_time = time.time()
+    mock_disruption_city_resolved = None
+    node_risks = {}
+
+    if query.mock_disruption_city:
+        mock_input = normalize_city(query.mock_disruption_city)
+        if mock_input in city_to_id:
+            mock_disruption_city_resolved = mock_input
+            
+            # Fetch fresh risk for the disrupted city immediately
+            print(f"🔄 Assessing manual disruption for: {mock_disruption_city_resolved}")
+            fresh_risks = assess_route_risk(
+                [mock_disruption_city_resolved],
+                mock_disruption_city=mock_disruption_city_resolved,
+                mock_disruption_type=query.mock_disruption_type,
+            )
+            node_risks = enrich_risk_snapshot(fresh_risks.get(mock_disruption_city_resolved, {}), current_time)
+            # Store back in node_risks for the penalty logic
+            node_risks = {mock_disruption_city_resolved: node_risks}
+
+    # ── 3. PASS 1: ML Prediction & Manual Risk Weighting ──
     dt, modified_features = build_request_edge_features(query)
     new_edge_attr = torch.tensor(edge_scaler.transform(modified_features), dtype=torch.float)
 
@@ -831,41 +842,50 @@ def find_route(query: RouteRequest):
             x_tensor, edge_index_tensor, new_edge_attr, edge_index_tensor
         ).view(-1).cpu().numpy()
 
+    G_local = G.copy()
     for idx, (u, v, k) in enumerate(edge_order):
-        edge_data = G[u][v][k]
-        delay = float(predictions[idx])
-        delay=max(0.0,delay)
+        edge_data = G_local[u][v][k]
+        delay = max(0.0, float(predictions[idx]))
         physics_time = edge_data["base_time"]
         final_time = physics_time + delay
+
+        # --- Target disruption penalty ---
+        if mock_disruption_city_resolved:
+            u_name = id_to_city[u]
+            v_name = id_to_city[v]
+            
+            # If the edge is incoming to or outgoing from the disrupted city
+            if u_name == mock_disruption_city_resolved or v_name == mock_disruption_city_resolved:
+                risk_score = node_risks.get(mock_disruption_city_resolved, {}).get("risk", 0.0)
+                risk_multiplier = 1.0 + (risk_score * 5.0) # Elevated sensitivity for pre-route pathfinding
+                
+                if risk_score > 0.4:
+                    final_time *= risk_multiplier
+                    print(f"⚠️ Penalizing disrupted edge: {u_name} -> {v_name} | New Weight: {final_time:.2f}")
+
+        # --- Country Border Penalty ---
         if edge_data["source_country"] != edge_data["target_country"]:
-    # if both source and final destination are same country
-            if id_to_city[src_id] and id_to_city[tgt_id]:
-                src_country = nodes_data[id_map[src_id]]["country"]
-                tgt_country = nodes_data[id_map[tgt_id]]["country"]
+            src_country = nodes_data[id_map[src_id]]["country"]
+            tgt_country = nodes_data[id_map[tgt_id]]["country"]
+            if src_country == tgt_country:
+                final_time *= 1000  
 
-                if src_country == tgt_country:
-                    final_time *= 1000   # strong penalty
-        G[u][v][k]["weight"] = final_time
+        G_local[u][v][k]["weight"] = final_time
 
-    # ── PASS 2: Filter graph by delivery type ──
-    print("Filtering graph by delivery type")
+    # ── 4. FILTER & FLATTEN ──
     G_filtered = nx.MultiDiGraph()
-    for u, v, k in G.edges(keys=True):
-        if is_edge_allowed(G[u][v][k], query.delivery_type):
-            G_filtered.add_edge(u, v, key=k, **G[u][v][k])
-    G_filtered.add_nodes_from(G.nodes(data=True))
-
-    # Flatten to simple DiGraph (keep fastest mode per pair) for path search
+    for u, v, k in G_local.edges(keys=True):
+        if is_edge_allowed(G_local[u][v][k], query.delivery_type):
+            G_filtered.add_edge(u, v, key=k, **G_local[u][v][k])
+    
     G_simple = nx.DiGraph()
     for u, v, k, data in G_filtered.edges(keys=True, data=True):
         w = data["weight"]
-        if G_simple.has_edge(u, v):
-            if w < G_simple[u][v]["weight"]:
-                G_simple[u][v]["weight"] = w
-        else:
+        if not G_simple.has_edge(u, v) or w < G_simple[u][v]["weight"]:
             G_simple.add_edge(u, v, weight=w)
 
-    # ── Generate top-10 candidate paths per leg ──
+    # ── 5. GENERATE PATHS ──
+    # Paths found here will now naturally avoid the mock_disruption_city if a better path exists
     try:
         segment_options = []
         for i in range(len(waypoints) - 1):
@@ -875,114 +895,29 @@ def find_route(query: RouteRequest):
             segment_options.append(list(islice(paths_gen, 10)))
         all_combinations = list(product(*segment_options))
     except nx.NetworkXNoPath:
-        raise HTTPException(status_code=404, detail="No compliant baseline route exists.")
+        raise HTTPException(status_code=404, detail="No compliant route exists under current conditions.")
 
-        # ── Collect unique cities needed across all candidate paths ──
-    unique_city_ids = set()
-    for combo in all_combinations:
-        for leg in combo:
-            unique_city_ids.update(leg)
-
-    unique_city_names = [normalize_city(id_to_city[nid]) for nid in unique_city_ids]
-
-    print("\n" + "🔍" * 20)
-    print(f"[DEBUG] Unique cities in route: {unique_city_names}")
-    print(f"[DEBUG] Incoming mock_disruption_city from frontend: '{query.mock_disruption_city}'")
-    print(f"[DEBUG] Incoming mock_disruption_type from frontend: '{query.mock_disruption_type}'")
-
-    # Resolve mock city exactly as stored in graph
-    mock_disruption_city_resolved = None
-    if query.mock_disruption_city:
-        mock_input = normalize_city(query.mock_disruption_city)
-        if mock_input in city_to_id:
-            mock_disruption_city_resolved = mock_input
-            print(f"✅ Mock city EXACT match: '{mock_input}'")
-        else:
-            print(f"❌ Mock city '{mock_input}' NOT found in city_to_id!")
-
-    current_time = time.time()
-    cities_to_fetch = []
-    node_risks = {}
-
-    for city in unique_city_names:
-        if mock_disruption_city_resolved and city == mock_disruption_city_resolved:
-            print(f"🔄 Forcing re-fetch + chaos for: {city}")
-            cities_to_fetch.append(city)
-        elif city in RISK_CACHE and (current_time - RISK_CACHE[city]["timestamp"]) < CACHE_TTL_SECONDS:
-            cached_entry = RISK_CACHE[city]
-            node_risks[city] = enrich_risk_snapshot(cached_entry["data"], cached_entry["timestamp"])
-        else:
-            cities_to_fetch.append(city)
-
-    print(f"🌍 Cities that will be fetched now: {cities_to_fetch}")
-
-    if cities_to_fetch:
-        print("🚀 Calling assess_route_risk with chaos...")
-        fresh_risks = assess_route_risk(
-            cities_to_fetch,
-            mock_disruption_city=mock_disruption_city_resolved,
-            mock_disruption_type=query.mock_disruption_type,
-        )
-
-        for city, risk_data in fresh_risks.items():
-            if city != mock_disruption_city_resolved:
-                RISK_CACHE[city] = {"data": risk_data, "timestamp": current_time}
-            node_risks[city] = enrich_risk_snapshot(risk_data, current_time)
-
-        # Extra debug
-        if mock_disruption_city_resolved and mock_disruption_city_resolved in node_risks:
-            print(f"🎯 Final node_risk for mock city → {mock_disruption_city_resolved}: {node_risks[mock_disruption_city_resolved]}")
-        else:
-            print(f"❌ mock city '{mock_disruption_city_resolved}' missing from final node_risks!")
-
-    # ... rest of your function (scored_combinations, top_3, return) stays exactly the same
-
-        # ── Score all candidate combinations ──
+    # ── 6. FINAL EVALUATION ──
+    # (Existing scoring and response logic follows...)
     scored_combinations = []
     baseline_candidates = []
     has_forced_hubs = bool(query.transit_hubs)
 
     for combo in all_combinations:
-        baseline_candidate = evaluate_route_combo(
-            combo,
-            G_filtered,
-            node_risks,
-            float(query.quantity),
-            has_forced_hubs,
-            apply_risk_penalty=False,
-            enforce_risk_block=False,
-        )
-        if baseline_candidate:
-            baseline_candidates.append(baseline_candidate)
+        # Standard Baseline
+        bc = evaluate_route_combo(combo, G_filtered, node_risks, float(query.quantity), has_forced_hubs, False, False)
+        if bc: baseline_candidates.append(bc)
 
-        risk_adjusted_candidate = evaluate_route_combo(
-            combo,
-            G_filtered,
-            node_risks,
-            float(query.quantity),
-            has_forced_hubs,
-            apply_risk_penalty=True,
-            enforce_risk_block=True,
-        )
-        if risk_adjusted_candidate:
-            scored_combinations.append(risk_adjusted_candidate)
+        # Risk Adjusted 
+        rac = evaluate_route_combo(combo, G_filtered, node_risks, float(query.quantity), has_forced_hubs, True, True)
+        if rac: scored_combinations.append(rac)
 
     if not scored_combinations:
-        raise HTTPException(
-            status_code=404,
-            detail="No compliant route exists even after forcing your transit hubs."
-        )
-
-    if not baseline_candidates:
-        raise HTTPException(
-            status_code=404,
-            detail="No baseline route could be evaluated for this shipment request."
-        )
+        raise HTTPException(status_code=404, detail="No compliant route exists after risk adjustment.")
 
     scored_combinations.sort(key=lambda x: x["total_transit_days"])
     top_3 = scored_combinations[:3]
-    for i, route in enumerate(top_3):
-        route["option"] = i + 1
+    for i, route in enumerate(top_3): route["option"] = i + 1
 
     baseline_fastest_route = min(
         baseline_candidates,
@@ -1106,7 +1041,7 @@ def live_track(req: LiveTrackRequest):
     #   { "Mumbai": {"risk": 0.7, "reason": "...", "components": {...}}, ... }
     try:
         risk_checked_ts = time.time()
-        node_risks = stamp_node_risks(assess_route_risk(remaining_cities), risk_checked_ts)
+        node_risks = stamp_node_risks(assess_route_risk(remaining_cities, req.mock_disruption_city, req.mock_disruption_type), risk_checked_ts)
         print(f"✅ node_risks: {node_risks}")
     except Exception as e:
         print(f"❌ Risk assessment failed: {e}")
