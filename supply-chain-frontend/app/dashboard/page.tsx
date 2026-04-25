@@ -7,7 +7,7 @@ import { collection, query, where, orderBy, getDocs, doc, updateDoc, deleteDoc }
 import { signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { db } from '@/lib/firebase';
-import { Package, MapPin, Clock, AlertTriangle, CheckCircle, Truck, RefreshCw, Trash2 } from 'lucide-react';
+import { Package, MapPin, Clock, AlertTriangle, CheckCircle, Truck, RefreshCw, CheckCircle2, ShieldAlert, Trash2 } from 'lucide-react';
 import axios from 'axios';
 import Link from 'next/link';
 import Notification from '@/components/dashboard/Notification';
@@ -15,6 +15,7 @@ import LiveTrackingToggle from '@/components/dashboard/LiveTrackingToggle';
 import ReRoutePreview from '@/components/dashboard/ReRoutePreview';
 import CityAutocomplete from '@/components/CityAutocomplete';
 import { apiUrl } from '@/lib/api';
+import CustomSelect from '@/components/route/CustomSelect'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface RouteCity {
@@ -75,27 +76,45 @@ interface ReRoutePreviewData {
 // ─── localStorage key for persisting active live-tracking shipment IDs ────────
 const LS_KEY = 'live_tracking_shipments';
 
+const DISASTER_VECTORS = [
+  { value: "Weather", label: "Hurricane / Storm" },
+  { value: "Logistics", label: "Labour Strike / Port Closure" },
+  { value: "Geopolitical", label: "Border / Conflict Blockade" },
+];
+
 // ─── Helper: build POST payload from a shipment ───────────────────────────────
 function buildPayload(shipment: Shipment, simulationData?: any) {
-  const lastCompletedIndex =
-    shipment.selected_route.route
-      .map((city, idx) => ({ idx, status: city.status }))
-      .filter((item) => item.status === 'completed')
-      .pop()?.idx ?? -1;
+  const route = shipment.selected_route.route;
+
+  // Prefer last completed city; if none, use the active city; last resort = 0
+  const lastCompletedIndex = route
+    .map((city, idx) => ({ idx, status: city.status }))
+    .filter((item) => item.status === 'completed')
+    .pop()?.idx ?? -1;
+
+  const activeIndex = route.findIndex((city) => city.status === 'active');
+
+  // -1 means nothing completed AND nothing active (shipment not started)
+  // Send activeIndex (or 0) so the backend evaluates the full live route
+  const current_city_index = lastCompletedIndex >= 0
+    ? lastCompletedIndex
+    : activeIndex >= 0
+    ? activeIndex
+    : 0;
 
   return {
     route_id: shipment.id,
-    cities: shipment.selected_route.route.map((city: any, idx: number) => ({
+    cities: route.map((city: any, idx: number) => ({
       city_name: city.city,
       status: city.status,
       order: idx + 1,
     })),
-    current_city_index: lastCompletedIndex,
+    current_city_index,
     delivery_type: shipment.delivery_type,
     category: shipment.category_name,
     dispatch_date: shipment.dispatch_date,
     mock_disruption_city: simulationData?.mock_disruption_city || null,
-    mock_disruption_type: simulationData?.mock_disruption_type || null
+    mock_disruption_type: simulationData?.mock_disruption_type || null,
   };
 }
 
@@ -122,6 +141,17 @@ function getHighRiskEntriesForRoute(
 
 function getShipmentHighRiskEntries(shipment: Shipment) {
   return getHighRiskEntriesForRoute(shipment.selected_route.route, shipment.node_risks);
+}
+
+function isPreviewStillRelevant(
+  preview: ReRoutePreviewData,
+  activeNodeRisks: Shipment['node_risks']
+): boolean {
+  // A preview is stale if none of its high-risk cities are still high-risk
+  if (!preview.high_risk_cities || preview.high_risk_cities.length === 0) return false;
+  return preview.high_risk_cities.some(
+    (city) => (activeNodeRisks?.[city]?.risk ?? 0) > 0.4
+  );
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -166,23 +196,51 @@ export default function DashboardPage() {
     } catch {}
   };
 
-  const [reRoutePreview, setReRoutePreview] = useState<Record<string, ReRoutePreviewData>>(() => {
-    if (typeof window === 'undefined') return {};
-    const uid = auth.currentUser?.uid;
-    return uid ? loadPersistedPreviews(uid) : {};
-  });
+  // Replace hasHydrated ref with state so effects re-run after hydration
+  const [isHydrated, setIsHydrated] = useState(false);
 
-  const [dismissedPreviews, setDismissedPreviews] = useState<Record<string, ReRoutePreviewData>>(() => {
-    if (typeof window === 'undefined') return {};
-    const uid = auth.currentUser?.uid;
-    return uid ? loadPersistedDismissed(uid) : {};
-  });
+  // Initialize both as empty — never try to read from localStorage here
+  const [reRoutePreview, setReRoutePreview] = useState<Record<string, ReRoutePreviewData>>({});
+  const [dismissedPreviews, setDismissedPreviews] = useState<Record<string, ReRoutePreviewData>>({});
 
-  const [isSimulationMode, setIsSimulationMode] = useState(false);
-  const [formData, setFormData] = useState({
-    mock_disruption_city: '',
-    mock_disruption_type: ''
-  });
+  useEffect(() => {
+    if (!user?.uid || isHydrated) return;
+  
+    const persistedActive = loadPersistedPreviews(user.uid);
+    const persistedDismissed = loadPersistedDismissed(user.uid);
+  
+    // Set both atomically before marking hydrated
+    if (Object.keys(persistedActive).length > 0) {
+      setReRoutePreview(persistedActive);
+    }
+    if (Object.keys(persistedDismissed).length > 0) {
+      setDismissedPreviews(persistedDismissed);
+    }
+  
+    setIsHydrated(true); // ← triggers a re-render, persist effects now unblock
+    }, [user?.uid, isHydrated]);
+
+    useEffect(() => {
+      if (!user?.uid) {
+        setIsHydrated(false); // reset so next login re-hydrates
+      }
+    }, [user?.uid]);
+
+    useEffect(() => {
+      if (!user?.uid || !isHydrated) return;
+      persistPreviews(user.uid, reRoutePreview);
+    }, [reRoutePreview, user?.uid, isHydrated]);
+    
+    useEffect(() => {
+      if (!user?.uid || !isHydrated) return;
+      persistDismissed(user.uid, dismissedPreviews);
+    }, [dismissedPreviews, user?.uid, isHydrated]);
+
+    const [isSimulationMode, setIsSimulationMode] = useState(false);
+    const [formData, setFormData] = useState({
+      mock_disruption_city: '',
+      mock_disruption_type: ''
+    });
 
   // Helper to update simulation data
   const handleInputChange = (field: string, value: string | null) => {
@@ -218,7 +276,7 @@ export default function DashboardPage() {
               city,
               risk: Number(riskData?.risk || 0),
               reason: riskData?.reason || 'Operational risk',
-              checkedAt: riskData?.checked_at,
+              checkedAt: riskData?.checked_at
             }))
             .filter((entry) => entry.risk > 0.4)
         )
@@ -233,8 +291,7 @@ export default function DashboardPage() {
     const rerouteReady = Boolean(reRoutePreview[shipment.id]);
     
     // Only count dismissed preview as actionable if risks are still elevated
-    const hasDismissedReroute = Boolean(dismissedPreviews[shipment.id]) && 
-      highRiskEntries.length > 0;  // ← risks must still be real
+    const hasDismissedReroute = Boolean(dismissedPreviews[shipment.id]);
 
     return {
       id: shipment.id,
@@ -255,8 +312,8 @@ export default function DashboardPage() {
   })
   .filter((entry) => 
     entry.rerouteReady || 
-    entry.hasDismissedReroute || 
-    entry.impactedCities.length > 0  // ← only real risks keep the card
+    entry.hasDismissedReroute ||     // ← this alone is enough, no node_risks needed
+    entry.impactedCities.length > 0
   )
   .sort((a, b) => 
     Number(b.rerouteReady) - Number(a.rerouteReady) || 
@@ -758,12 +815,26 @@ export default function DashboardPage() {
             : s
         )
       );
-    } catch (err) {
-      console.error('Error updating city status:', err);
-    } finally {
-      setUpdatingCity((prev) => ({ ...prev, [`${cityTickConfirm?.shipmentId}-${cityTickConfirm?.cityIndex}`]: false }));
-    }
-  };
+
+      // Any progress on a shipment invalidates its pending reroute suggestions
+      setReRoutePreview((prev) => {
+        if (!prev[shipmentId]) return prev;
+        const { [shipmentId]: _, ...rest } = prev;
+        return rest;
+      });
+
+      setDismissedPreviews((prev) => {
+        if (!prev[shipmentId]) return prev;
+        const { [shipmentId]: _, ...rest } = prev;
+        return rest;
+      });
+
+          } catch (err) {
+            console.error('Error updating city status:', err);
+          } finally {
+            setUpdatingCity((prev) => ({ ...prev, [`${cityTickConfirm?.shipmentId}-${cityTickConfirm?.cityIndex}`]: false }));
+          }
+        };
 
   // ─── Style helpers ────────────────────────────────────────────────────────
   const getStatusBadgeStyle = (status: string) => {
@@ -776,15 +847,63 @@ export default function DashboardPage() {
     }
   };
 
-  useEffect(() => {
-    if (!user?.uid) return;
-    persistPreviews(user.uid, reRoutePreview);
-  }, [reRoutePreview, user?.uid]);
+  const dismissHotspot = useCallback(async (city: string) => {
+    // Find all shipments that have this city in their node_risks
+    const affectedShipments = shipments.filter(
+      (s) => s.node_risks?.[city] !== undefined
+    );
   
-  useEffect(() => {
-    if (!user?.uid) return;
-    persistDismissed(user.uid, dismissedPreviews);
-  }, [dismissedPreviews, user?.uid]);
+    // Remove from Firestore and local state for each affected shipment
+    for (const shipment of affectedShipments) {
+      const updatedNodeRisks = { ...shipment.node_risks };
+      delete updatedNodeRisks[city];
+  
+      try {
+        await updateDoc(doc(db, 'user_shipments', shipment.id), {
+          node_risks: updatedNodeRisks,
+          updated_at: new Date(),
+        });
+      } catch (err) {
+        console.error('Error dismissing hotspot:', err);
+      }
+    }
+  
+    // Update local shipment state
+    setShipments((prev) =>
+      prev.map((s) => {
+        if (!s.node_risks?.[city]) return s;
+        const updatedNodeRisks = { ...s.node_risks };
+        delete updatedNodeRisks[city];
+        return { ...s, node_risks: updatedNodeRisks };
+      })
+    );
+  
+    // Discard any reroute previews that were specifically about this city
+    const discardIfTargetsCity = (preview: ReRoutePreviewData) =>
+      preview.high_risk_cities?.includes(city) ||
+      preview.avoided_high_risk_cities?.includes(city) ||
+      preview.current_high_risk_cities?.includes(city);
+  
+    setReRoutePreview((prev) => {
+      const next = { ...prev };
+      for (const [shipmentId, preview] of Object.entries(next)) {
+        if (discardIfTargetsCity(preview)) {
+          delete next[shipmentId];
+        }
+      }
+      return next;
+    });
+  
+    setDismissedPreviews((prev) => {
+      const next = { ...prev };
+      for (const [shipmentId, preview] of Object.entries(next)) {
+        if (discardIfTargetsCity(preview)) {
+          delete next[shipmentId];
+        }
+      }
+      return next;
+    });
+  }, [shipments]);
 
   // ─── Loading / error states ───────────────────────────────────────────────
   if (loading) return (
@@ -797,7 +916,7 @@ export default function DashboardPage() {
   );
 
   if (error) return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center">
+    <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-slate-900 to-indigo-950 flex items-center justify-center p-4">
       <div className="text-white text-center">
         <AlertTriangle className="w-16 h-16 text-red-400 mx-auto mb-4" />
         <p className="text-xl">{error}</p>
@@ -810,7 +929,7 @@ export default function DashboardPage() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+    <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-slate-900 to-indigo-950">
       {/* Animated background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse" />
@@ -838,7 +957,6 @@ export default function DashboardPage() {
                   try {
                     if (user?.uid) {
                       localStorage.removeItem(getStorageKey(user.uid, 'active'));
-                      localStorage.removeItem(getStorageKey(user.uid, 'dismissed'));
                     }
                     await signOut(auth);
                     router.push('/');
@@ -925,7 +1043,7 @@ export default function DashboardPage() {
                 {topRiskHotspots[0]?.city || '—'}
               </p>
               <p className="text-sm text-gray-300 mt-1">
-                {topRiskHotspots[0] ? `Score: ${topRiskHotspots[0].risk.toFixed(2)}` : 'No major disruptions'}
+                {topRiskHotspots[0] ? `Score: ${Math.round(topRiskHotspots[0].risk*100)}%` : 'No major disruptions'}
               </p>
             </div>
 
@@ -965,7 +1083,7 @@ export default function DashboardPage() {
               {isSimulationMode && (
                 <>
                   <div className="flex flex-col w-56">
-                    <span className="text-[10px] text-gray-500 uppercase ml-1 mb-1 tracking-widest">Target Zone</span>
+                    <span className="block text-xs font-semibold uppercase tracking-widest text-slate-400 mb-1.5 flex items-center gap-1.5 ">Target Zone</span>
                     <CityAutocomplete
                       value={formData.mock_disruption_city || ''}
                       onChange={(value) => handleInputChange('mock_disruption_city', value)}
@@ -973,18 +1091,15 @@ export default function DashboardPage() {
                     />
                   </div>
 
-                  <div className="flex flex-col w-56">
-                    <span className="text-[10px] text-gray-500 uppercase ml-1 mb-1 tracking-widest">Disaster Vector</span>
-                    <select 
-                      className="bg-white/10 border border-white/20 rounded-xl px-4 py-2 text-sm text-white focus:ring-2 focus:ring-red-500/50 outline-none appearance-none h-[42px]"
+                  <div>
+                    <CustomSelect
+                      label="Disaster Vector"
+                      icon={AlertTriangle} // Or use Zap / ShieldAlert from lucide-react
                       value={formData.mock_disruption_type || ''}
-                      onChange={(e) => handleInputChange('mock_disruption_type', e.target.value)}
-                    >
-                      <option value="" className="bg-slate-900">Select Type...</option>
-                      <option value="Weather" className="bg-slate-900">Hurricane / Storm</option>
-                      <option value="Logistics" className="bg-slate-900">Labor Strike / Port Closure</option>
-                      <option value="Geopolitical" className="bg-slate-900">Border / Conflict Blockade</option>
-                    </select>
+                      options={DISASTER_VECTORS}
+                      placeholder="Select type..."
+                      onChange={(val) => handleInputChange('mock_disruption_type', val)}
+                    />
                   </div>
 
                   <button
@@ -1034,38 +1149,65 @@ export default function DashboardPage() {
         </div>
 
         <div className="mb-8 rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-6">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          {/* Header Section */}
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-6">
             <div>
-              <h2 className="text-2xl font-bold text-white">Risk Control Tower</h2>
-              <p className="text-gray-300 mt-1">
-                Highest-severity disruption hotspots across your monitored shipments
+              <div className="flex items-center gap-3 mb-1">
+                <ShieldAlert className="w-6 h-6 text-purple-400" />
+                <h2 className="text-2xl font-bold text-white tracking-tight">Risk Control Tower</h2>
+              </div>
+              <p className="text-xs text-slate-500">
+                Highest-severity disruption hotspots across your monitored shipments.
               </p>
-            </div>
-            <div className="text-sm text-gray-400">
-              Live view based on saved route risk snapshots and reroute monitoring
             </div>
           </div>
 
           {topRiskHotspots.length === 0 ? (
-            <div className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-emerald-200">
-              No high-risk hotspots are currently flagged across tracked shipments.
+            <div className="flex items-start gap-3 text-sm text-emerald-400 bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-5">
+              <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
+              <p>No high-risk hotspots are currently flagged across tracked shipments.</p>
             </div>
           ) : (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 mt-5">
+            /* Inner Grid: Consistent 4-column layout for the Tower view */
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               {topRiskHotspots.map((hotspot) => (
                 <div
-                  key={hotspot.city}
-                  className="rounded-xl border border-yellow-400/20 bg-yellow-500/10 p-4"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="font-semibold text-white">{hotspot.city}</p>
-                    <span className="text-lg font-bold text-yellow-300">{hotspot.risk.toFixed(2)}</span>
+                key={hotspot.city}
+                className="rounded-xl border border-white/10 bg-slate-950/70 p-4 transition-all duration-200"
+              >
+                <div className="flex items-center justify-between gap-4 mb-3">
+                  <div>
+                    <p className="font-bold text-white">{hotspot.city}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">
+                      {hotspot.reason}
+                    </p>
                   </div>
-                  <p className="text-sm text-gray-300 mt-2">{hotspot.reason}</p>
-                  <p className="text-xs text-gray-500 mt-3">
-                    Last checked {formatRiskTimestamp(hotspot.checkedAt)}
-                  </p>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <p className="text-[10px] uppercase tracking-tighter text-slate-600 font-black">Score</p>
+                      <p className="text-xl font-black text-purple-400 leading-none">
+                        {Math.round(hotspot.risk * 100)}%
+                      </p>
+                    </div>
+                    {/* ── Dismiss hotspot ── */}
+                    <button
+                      onClick={() => dismissHotspot(hotspot.city)}
+                      className="p-1.5 rounded-lg text-slate-600 hover:text-slate-300 hover:bg-white/10 transition-colors flex-shrink-0"
+                      title="Ignore this hotspot"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                        <line x1="2" y1="2" x2="12" y2="12"/>
+                        <line x1="12" y1="2" x2="2" y2="12"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
+              
+                <div className="mt-4 pt-3 border-t border-slate-800/50 flex items-center justify-between opacity-50">
+                  <span className="text-[9px] font-bold text-slate-600 uppercase tracking-widest">Snapshot</span>
+                  <span className="text-[9px] text-slate-500">{formatRiskTimestamp(hotspot.checkedAt)}</span>
+                </div>
+              </div>
               ))}
             </div>
           )}
@@ -1109,7 +1251,7 @@ export default function DashboardPage() {
                         });
                       }
                     }}
-                    className={`rounded-xl border border-white/10 bg-slate-950/70 p-4 transition-all duration-200 ${
+                    className={`rounded-xl border border-slate-800 bg-slate-900/40 p-4 transition-all hover:border-purple-500/40 group ${
                       hasDismissedPreview 
                         ? 'cursor-pointer hover:border-yellow-400/40 hover:bg-yellow-500/5 hover:shadow-lg hover:shadow-yellow-900/10' 
                         : 'cursor-default'
@@ -1141,7 +1283,7 @@ export default function DashboardPage() {
                     <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
                       <div className="rounded-lg bg-slate-900 px-3 py-2">
                         <p className="text-gray-500 text-xs uppercase tracking-wide">Risk</p>
-                        <p className="text-white font-semibold">{impact.riskLevel.toFixed(2)}</p>
+                        <p className="text-white font-semibold">{Math.round(impact.riskLevel*100)}%</p>
                       </div>
                       <div className="rounded-lg bg-slate-900 px-3 py-2">
                         <p className="text-gray-500 text-xs uppercase tracking-wide">Live Tracking</p>
@@ -1204,7 +1346,7 @@ export default function DashboardPage() {
                       <div className="flex items-center mb-2">
                         <MapPin className="w-5 h-5 text-blue-400 mr-2" />
                         <h3 className="text-xl font-bold text-white">
-                          {shipment.source} → {shipment.target}
+                          {shipment.source} → {shipment.target} (#{shipment.id.slice(0, 8).toUpperCase()})
                         </h3>
                       </div>
                       <div className="flex items-center flex-wrap gap-3 text-sm text-gray-300">
@@ -1240,24 +1382,54 @@ export default function DashboardPage() {
                         
                         {/* ── Delete Confirmation ── */}
                         {showDeleteConfirm && (
-                          <div className="absolute right-0 mt-2 w-48 bg-white/95 backdrop-blur-lg border border-white/20 rounded-xl shadow-2xl p-3 z-10">
-                            <p className="text-sm text-gray-700 mb-2">Are you sure you want to delete?</p>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => {
-                                  handleDeleteShipment(shipment.id);
-                                  setDeleteConfirmFor(null);
-                                }}
-                                className="flex-1 px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors"
-                              >
-                                Yes
-                              </button>
-                              <button
-                                onClick={() => setDeleteConfirmFor(null)}
-                                className="flex-1 px-3 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-medium rounded-lg transition-colors"
-                              >
-                                No
-                              </button>
+                          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm">
+                            <div className="relative w-full max-w-sm rounded-3xl border border-white/10 bg-slate-900/95 backdrop-blur-xl shadow-2xl p-6 overflow-hidden">
+                              
+                              {/* Red Glow Background Effect */}
+                              <div className="absolute -top-24 -right-24 w-48 h-48 bg-red-500/10 blur-[80px] pointer-events-none" />
+
+                              {/* Header Section */}
+                              <div className="flex items-center gap-4 mb-5">
+                                <div className="w-12 h-12 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-center justify-center flex-shrink-0">
+                                  <Trash2 className="w-6 h-6 text-red-400" />
+                                </div>
+                                <div>
+                                  <h3 className="text-white font-bold text-lg tracking-tight">Delete Shipment</h3>
+                                  <p className="text-red-400/60 text-[10px] uppercase font-black tracking-widest mt-0.5">
+                                    Critical Action
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* Body Content */}
+                              <div className="space-y-2 mb-8">
+                                <p className="text-slate-200 text-sm leading-relaxed">
+                                  Are you sure you want to remove shipment{' '}
+                                  <span className="text-white font-bold">#{shipment.id.slice(0, 8)}</span>?
+                                </p>
+                                <p className="text-slate-500 text-xs">
+                                  This will permanently purge the tracking data and route history from the control tower.
+                                </p>
+                              </div>
+
+                              {/* Actions */}
+                              <div className="flex gap-3">
+                                <button
+                                  onClick={() => setDeleteConfirmFor(null)}
+                                  className="flex-1 px-4 py-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-slate-300 text-sm font-bold transition-all"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    handleDeleteShipment(shipment.id);
+                                    setDeleteConfirmFor(null);
+                                  }}
+                                  className="flex-1 px-4 py-3 rounded-2xl bg-red-600 hover:bg-red-500 active:scale-95 text-white text-sm font-black uppercase tracking-widest transition-all shadow-xl shadow-red-900/40"
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             </div>
                           </div>
                         )}

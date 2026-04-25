@@ -84,28 +84,28 @@ export default function ControlTowerInsights({
   const derivedCleanestRoute = response.recommended_routes.reduce((best, route) =>
     route.total_carbon_kg < best.total_carbon_kg ? route : best
   );
-  const fastestRoute = response.baseline_fastest_route ?? derivedFastestRoute;
-  const safestRoute = response.baseline_safest_route ?? derivedSafestRoute;
-  const cleanestRoute = response.baseline_cleanest_route ?? derivedSafestRoute;
+  const fastestRoute = derivedFastestRoute;
+  const safestRoute = derivedSafestRoute;
+  const cleanestRoute = derivedCleanestRoute;
 
   const routeCities = extractRouteCities(selectedRoute.route);
   const riskHotspots = routeCities.reduce<RiskEntry[]>((entries, city) => {
-    const riskData = response.node_risks?.[city];
-    if (!riskData || typeof riskData !== 'object') {
-      return entries;
-    }
+  const riskData = response.node_risks?.[city];
+  if (!riskData || typeof riskData !== 'object') {
+    return entries;
+  }
 
-    const riskEntry: RiskEntry = {
-      city,
-      risk: Number(riskData.risk || 0),
-      reason: riskData.reason || 'Normal operations',
-      checkedAt: riskData.checked_at,
-      components: riskData.components,
-    };
+  const riskEntry: RiskEntry = {
+    city,
+    risk: Number(riskData.risk || 0),
+    reason: riskData.reason || 'Normal operations',
+    checkedAt: riskData.checked_at,
+    components: riskData.components,
+  };
 
-    if (riskEntry.risk > 0.2) {
-      entries.push(riskEntry);
-    }
+  if (riskEntry.risk > 0.2) {
+    entries.push(riskEntry);
+  }
 
     return entries;
   }, []).sort((a, b) => b.risk - a.risk);
@@ -192,8 +192,8 @@ export default function ControlTowerInsights({
         </div>
 
         <div className="bg-slate-950 rounded-xl border border-slate-800 p-4">
-          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Risk Level</p>
-          <p className="text-2xl font-bold text-white mt-2">{selectedRoute.route_risk_level}</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Risk Score</p>
+          <p className="text-2xl font-bold text-white mt-2">{Math.round(selectedRoute.route_risk_level * 100)}%</p>
           <p className="text-sm text-slate-400 mt-1">
             {riskGapToSafest <= 0
               ? 'This is the safest available route'
@@ -251,7 +251,7 @@ export default function ControlTowerInsights({
                   </div>
                   <div className="bg-slate-900/70 rounded-lg px-3 py-2">
                     <p className="text-slate-500 text-xs uppercase tracking-wide">Risk</p>
-                    <p className="text-white font-semibold">{baseline.route.route_risk_level}</p>
+                    <p className="text-white font-semibold">{Math.round(baseline.route.route_risk_level * 100)}%</p>
                   </div>
 
                   <div className="bg-slate-900/70 rounded-lg px-3 py-2">
@@ -267,125 +267,82 @@ export default function ControlTowerInsights({
         </div>
       </div>
 
-      <div className="grid lg:grid-cols gap-6 mt-6">
-        <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <ShieldAlert className="w-5 h-5 text-amber-400" />
-            <h3 className="text-lg font-semibold text-white">Disruption Hotspots</h3>
+      <div className="flex flex-col gap-6 mt-6">
+      {/* Disruption Hotspots Section - Always takes the entire row */}
+      <div className="w-full bg-slate-950 rounded-2xl border border-slate-800 p-6">
+        <div className="flex items-center gap-3 mb-2">
+          <ShieldAlert className="w-5 h-5 text-purple-400" />
+          <h3 className="text-xl font-bold text-white tracking-tight">Disruption Hotspots</h3>
+        </div>
+        <p className="text-xs text-slate-500 mb-6">
+          Risk evidence is derived from live weather, logistics news, and geopolitical signals.
+        </p>
+
+        {riskHotspots.length === 0 ? (
+          <div className="flex items-start gap-3 text-sm text-emerald-400 bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
+            <CheckCircle2 className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            <p>No major risk hotspots are currently detected on this route.</p>
           </div>
-          <p className="text-xs text-slate-500 mb-4">
-            Risk evidence is derived from live weather, logistics news, and geopolitical signals at route-analysis time.
-          </p>
-
-          {riskHotspots.length === 0 ? (
-            <div className="flex items-start gap-3 text-sm text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 rounded-xl p-4">
-              <CheckCircle2 className="w-5 h-5 flex-shrink-0 mt-0.5" />
-              <p>No major risk hotspots are currently detected on this route.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {riskHotspots.slice(0, 4).map((hotspot) => (
-                <div
-                  key={hotspot.city}
-                  className="rounded-xl border border-amber-400/20 bg-amber-500/10 p-4"
-                >
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <p className="font-semibold text-white">{hotspot.city}</p>
-                      <p className="text-sm text-slate-300 mt-1">{hotspot.reason}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Risk</p>
-                      <p className="text-xl font-bold text-amber-300">{hotspot.risk.toFixed(2)}</p>
-                    </div>
+        ) : (
+          /* Inner Grid: Each hotspot card is 1/3rd of the row */
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {riskHotspots.slice(0, 3).map((hotspot) => (
+              <div
+                key={hotspot.city}
+                className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 transition-all hover:border-purple-500/30"
+              >
+                <div className="flex items-center justify-between gap-4 mb-3">
+                  <div>
+                    <p className="font-bold text-white">{hotspot.city}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{hotspot.reason}</p>
                   </div>
-
-                  {hotspot.components && (
-                  <div className="grid grid-cols-3 gap-2 mt-3 text-xs text-slate-300">
-                      <div className="bg-slate-900/70 rounded-lg px-3 py-2">
-                        Weather {Number(hotspot.components.weather || 0).toFixed(2)}
-                      </div>
-                      <div className="bg-slate-900/70 rounded-lg px-3 py-2">
-                        News {Number(hotspot.components.news || 0).toFixed(2)}
-                      </div>
-                      <div className="bg-slate-900/70 rounded-lg px-3 py-2">
-                        Geo {Number(hotspot.components.geo || 0).toFixed(2)}
-                      </div>
-                    </div>
-                  )}
-
-                  <p className="text-xs text-slate-500 mt-3">
-                    Snapshot refreshed {formatCheckedAt(hotspot.checkedAt)}
-                  </p>
+                  <div className="text-right">
+                    <p className="text-[10px] uppercase tracking-tighter text-slate-500 font-bold">Risk Score</p>
+                    <p className="text-xl font-black text-purple-400 leading-none">{Math.round(hotspot.risk * 100)}%</p>
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
 
-        <div className="space-y-4">
-          {/* <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <TimerReset className="w-5 h-5 text-blue-400" />
-              <h3 className="text-lg font-semibold text-white">Operational Flags</h3>
-            </div>
-            <div className="space-y-3 text-sm">
-              <div className="flex items-start gap-3">
-                <Waypoints className="w-4 h-4 text-blue-400 mt-0.5" />
-                <p className="text-slate-300">
-                  {selectedRoute.forced_through_hubs
-                    ? 'This route respects user-selected transit hubs.'
-                    : 'This route was chosen without forced transit hubs.'}
-                </p>
-              </div>
-              <div className="flex items-start gap-3">
-                <AlertTriangle
-                  className={`w-4 h-4 mt-0.5 ${
-                    selectedRoute.has_high_risk_hub ? 'text-red-400' : 'text-emerald-400'
-                  }`}
-                />
-                <p className="text-slate-300">
-                  {selectedRoute.has_high_risk_hub
-                    ? 'One or more required hubs remain high risk right now.'
-                    : 'No required high-risk hub is forcing this route.'}
-                </p>
-              </div>
-            </div>
-          </div> */}
+                {hotspot.components && (
+                  <div className="grid grid-cols-3 gap-3 mt-4">
+                    {['weather', 'news', 'geo'].map((key) => {
+                      const value = Number((hotspot.components as any)[key] || 0);
+                      const percentage = Math.round(value * 100);
+                      
+                      return (
+                        <div key={key} className="bg-slate-950/80 border border-slate-800 rounded-lg p-2 flex flex-col items-center">
+                          <p className="text-[9px] text-slate-500 font-bold uppercase tracking-tighter mb-1">
+                            {key === 'geo' ? 'Geopol' : key}
+                          </p>
+                          
+                          {/* Circular or Bar Progress Indicator */}
+                          <div className="w-full h-1 bg-slate-800 rounded-full mb-1.5 overflow-hidden">
+                            <div 
+                              className={`h-full transition-all duration-500 ${
+                                percentage > 70 ? 'bg-rose-500' : percentage > 30 ? 'bg-purple-500' : 'bg-emerald-500'
+                              }`}
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
 
-          {/* <div className="bg-slate-950 rounded-xl border border-slate-800 p-5">
-            <h3 className="text-lg font-semibold text-white mb-4">Option Comparison</h3>
-            <div className="space-y-3">
-              {response.recommended_routes.map((route) => {
-                const isActive = route.option === selectedRoute.option;
-                return (
-                  <div
-                    key={route.option}
-                    className={`rounded-xl border px-4 py-3 ${
-                      isActive
-                        ? 'border-blue-400/40 bg-blue-500/10'
-                        : 'border-slate-800 bg-slate-900/70'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <p className="font-medium text-white">Option {route.option}</p>
-                        <p className="text-sm text-slate-400">
-                          {route.total_transit_days} days · Risk {route.route_risk_level}
-                        </p>
-                      </div>
-                      {recommendedOption === route.option && (
-                        <span className="text-xs font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-400/20 px-2.5 py-1 rounded-full">
-                          Recommended
-                        </span>
-                      )}
-                    </div>
+                          <p className="text-[11px] font-bold text-slate-200">
+                            {percentage}%
+                          </p>
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-            </div>
-          </div> */}
-        </div>
+                )}
+
+                <div className="mt-4 flex items-center justify-between opacity-50">
+                    <span className="text-[9px] text-slate-500">
+                        Checked {formatCheckedAt(hotspot.checkedAt)}
+                    </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       </div>
     </div>
   );

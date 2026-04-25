@@ -85,7 +85,7 @@ export default function Header({ response, onBack, onShare, onExport, onSave, sa
                 Total Transit Time: <span className="font-bold">{totalTransitDays} days</span>
               </p>
               <p>
-                Route Risk: <span className="font-bold">{routeRiskLevel.toFixed(2)}</span>
+                Route Risk: <span className="font-bold">{Math.round(routeRiskLevel*100).toFixed(0)}%</span>
               </p>
               <p>
                 Carbon: <span className="font-bold">{totalCarbon.toFixed(2)} kg</span>

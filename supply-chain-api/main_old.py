@@ -454,6 +454,7 @@ def is_edge_allowed(edge_data, delivery_type):
     if delivery_type == "Only Truck": return mode == "Truck"
     if delivery_type == "No Air":     return mode != "Air"
     if delivery_type == "No Ocean":   return mode != "Ocean"
+    if delivery_type == "No Truck":   return mode != "Truck"
     return True
 
 
