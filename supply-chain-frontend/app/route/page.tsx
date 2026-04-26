@@ -3,8 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { RouteResponse } from '@/types/route';
-import { Header, RouteVisualization, RouteDetails, RouteSegments, RouteStats } from '@/components/route';
-import { CheckCircle, BrainCircuit, AlertTriangle, Loader2, Save } from 'lucide-react';
+import { ControlTowerInsights, Header, RouteVisualization, RouteDetails, RouteSegments, RouteStats } from '@/components/route';
+import { CheckCircle, BrainCircuit, AlertTriangle, Loader2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { saveShipment } from '@/lib/saveShipment';
 import { apiUrl } from '@/lib/api';
@@ -22,8 +22,6 @@ export default function RoutePage() {
   const [error, setError]                       = useState<string | null>(null);
   const [saving, setSaving]                     = useState(false);
   const [saveSuccess, setSaveSuccess]             = useState(false);
-  // ← UPDATED: now typed and will be populated
-  const [cityCoordinates, setCityCoordinates]   = useState<Record<string, {lat: number; lng: number}>>({});
 
   // Prevents React Strict Mode from firing the Gemini call twice in development
   const hasFetchedGemini = useRef(false);
@@ -47,7 +45,6 @@ export default function RoutePage() {
       const parsed = JSON.parse(routeData) as RouteResponse;
       console.log('Parsed route data:', parsed);
       setResponse(parsed);
-      setCityCoordinates(parsed.city_coordinates || {});
     } catch (err) {
       setError('Failed to parse route data.');
     } finally {
@@ -100,7 +97,14 @@ export default function RoutePage() {
         .then(decision => {
           console.log('Gemini Response:', decision);
           setGeminiDecision(decision);
-          setSelectedRouteIndex(decision.recommended_option - 1);
+          const recommendedIndex = Math.max(
+            0,
+            Math.min(
+              (decision.recommended_option || 1) - 1,
+              response.recommended_routes.length - 1
+            )
+          );
+          setSelectedRouteIndex(recommendedIndex);
         })
         .catch(err => {
           console.error('Gemini failed:', err);
@@ -151,6 +155,8 @@ export default function RoutePage() {
         recommended_routes: response.recommended_routes,
         selected_option: selectedRouteIndex + 1, // Use user-selected route (options are 1-indexed)
         node_risks: response.node_risks,
+        risk_checked_at: response.risk_checked_at,
+        risk_sources: response.risk_sources,
         // city_coordinates: response.city_coordinates,
         ai_recommendation: geminiDecision,
       });
@@ -258,6 +264,91 @@ export default function RoutePage() {
             </div>
           </div>
         )}
+
+        {/* ── Route option tabs ── */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 w-full">
+          {response.recommended_routes.map((opt, idx) => (
+            <button
+              key={idx}
+              onClick={() => setSelectedRouteIndex(idx)}
+              className={`relative flex flex-col p-5 rounded-2xl border transition-all duration-300 text-left w-full group ${
+                selectedRouteIndex === idx
+                  ? 'bg-slate-800 border-blue-500 shadow-xl shadow-blue-900/20 ring-1 ring-blue-500/50'
+                  : 'bg-slate-900 border-slate-800 hover:border-slate-600 hover:bg-slate-800/40'
+              }`}
+            >
+              {/* Top Right Highlight Dot */}
+              {selectedRouteIndex === idx && (
+                <div className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-blue-500 rounded-full border-2 border-slate-900 z-10 shadow-lg shadow-blue-500/50" />
+              )}
+
+              {/* Header Row: Option & Transit Time */}
+              <div className="flex justify-between items-end mb-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500 mb-1">Logistics Path</p>
+                  <h3 className="text-xl font-bold text-white leading-none">Option {opt.option}</h3>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-bold uppercase tracking-tight text-blue-500/80">Est. Time</p>
+                  <p className="text-lg font-semibold text-slate-100 leading-none">{opt.total_transit_days} Days</p>
+                </div>
+              </div>
+
+              {/* Simple Divider */}
+              <div className="h-px w-full bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800 mb-4" />
+
+              {/* Clean Route Path */}
+              <div className="flex flex-wrap items-center gap-y-4 gap-x-1">
+          {opt.route.map((segment, sIdx) => (
+            /* Use display: contents to let the children wrap naturally */
+            <div key={sIdx} className="contents">
+              {/* From City */}
+              <span className="text-[13px] font-medium text-slate-200 whitespace-nowrap">
+                {segment.from}
+              </span>
+              
+              {/* Mode Icon & Arrow */}
+              <div className="flex flex-col items-center px-2 text-slate-500">
+                <span className="text-[10px] mb-0.5 filter grayscale group-hover:grayscale-0 transition-all">
+                  {segment.mode === 'Truck' && '🚚'}
+                  {segment.mode === 'Ocean' && '🚢'}
+                  {segment.mode === 'Air' && '✈️'}
+                  {segment.mode === 'Rail' && '🚂'}
+                </span>
+                <div className="h-[2px] w-6 bg-slate-700 rounded-full" />
+              </div>
+
+              {/* Show the final Destination only after the last segment */}
+              {sIdx === opt.route.length - 1 && (
+                <span className="text-[13px] font-medium text-slate-200 whitespace-nowrap">
+                  {segment.to}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+              {/* Subtle Hotspot Indicator (if any exist) */}
+              {opt.route.some(s => (s.risk_score || 0) > 0.4) && (
+                <div className="mt-4 flex items-center gap-1.5">
+                  <div className="flex -space-x-1">
+                    {opt.route.filter(s => (s.risk_score || 0) > 0.4).map((_, i) => (
+                      <div key={i} className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.6)]" />
+                    ))}
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">Security Alert</span>
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+        <div className="mb-8">
+          <ControlTowerInsights
+            response={response}
+            selectedRouteIndex={selectedRouteIndex}
+            recommendedOption={geminiDecision?.recommended_option ?? null}
+          />
+        </div>
         {currentRoute.has_high_risk_hub && (
   <div className="mb-6 p-4 bg-red-900/30 border border-red-400 rounded-2xl flex items-start gap-3">
     <AlertTriangle className="w-5 h-5 text-red-400 mt-0.5" />
@@ -269,28 +360,6 @@ export default function RoutePage() {
     </div>
   </div>
 )}
-        {/* ── Route option tabs ── */}
-        <div className="flex gap-4 mb-6">
-          {response.recommended_routes.map((opt, idx) => (
-            <button
-              key={idx}
-              onClick={() => setSelectedRouteIndex(idx)}
-              className={`flex-1 p-4 rounded-xl border transition-all ${
-                selectedRouteIndex === idx
-                  ? 'bg-blue-600 border-blue-400 shadow-[0_0_20px_rgba(37,99,235,0.4)]'
-                  : 'bg-slate-900 border-slate-700 hover:bg-slate-800'
-              }`}
-            >
-              <div className="text-lg font-bold text-white">Option {opt.option}</div>
-              <div className="text-sm text-gray-300">
-                {opt.total_transit_days} Days · Risk: {opt.route_risk_level}
-              </div>
-              <div className="text-xs text-green-400 mt-1">
-                CO2: {opt.total_carbon_kg || 0} kg
-              </div>
-            </button>
-          ))}
-        </div>
 
         {/* ── Main content grid ── */}
         <div className="grid lg:grid-cols-3 gap-8">

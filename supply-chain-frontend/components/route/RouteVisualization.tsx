@@ -50,9 +50,17 @@ export default function RouteVisualization({ response }: RouteVisualizationProps
   }, []);
 
   const currentRoute = response.route || [];
+  const responseCoordinatesSource = (response.city_coordinates || {}) as Record<
+    string,
+    { lat: number; lng: number }
+  >;
+  const responseCoordinates = Object.fromEntries(
+    Object.entries(responseCoordinatesSource).map(([city, coords]) => [city, [coords.lat, coords.lng] as [number, number]])
+  );
+  const mergedCoordinates = { ...cityCoordinates, ...responseCoordinates };
 
   const getCityCoordinates = (city: string): [number, number] => {
-    const coord = cityCoordinates[city];
+    const coord = mergedCoordinates[city];
     if (coord) return coord; // JSON format is [lat, lng] array
     console.warn(`⚠️ Missing coordinates for city: ${city}`);
     return [20, 78]; // fallback

@@ -63,12 +63,17 @@ if ENVIRONMENT != "production" and not ALLOWED_ORIGINS:
 # risk_engine.py has its OWN genai.configure() + risk_model instance.
 # This client is only for /select_best_route.
 genai.configure(api_key=GEMINI_API_KEY)
-decision_model = genai.GenerativeModel("gemini-2.5-flash")
+decision_model = genai.GenerativeModel("gemini-3.1-flash-lite-preview")
 
 # ── Global risk cache ──
 # { "City Name": {"data": risk_dict, "timestamp": float} }
 RISK_CACHE        = {}
 CACHE_TTL_SECONDS = 1800  # 30 minutes
+RISK_SIGNAL_SOURCES = {
+    "weather": "OpenWeatherMap",
+    "news": "GNews",
+    "analysis": "Gemini 2.5 Flash Lite",
+}
 
 # ============================================================
 # FILES
@@ -292,7 +297,7 @@ edge_in_dim = edge_attr_tensor.shape[1]
 ml_model    = RobustSupplyChainSAGE(node_in_dim, edge_in_dim, 128, 4)
 
 try:
-    ml_model.load_state_dict(torch.load(MODEL_FILE, map_location="cpu"))
+    ml_model.load_state_dict(torch.jit.load(MODEL_FILE, map_location="cpu"))
     print(f"✅ Model loaded successfully. Node dim: {node_in_dim}, Edge dim: {edge_in_dim}")
 except RuntimeError as e:
     print(f"⚠️ Model architecture mismatch: {e}")
@@ -377,6 +382,11 @@ class RouteResponse(BaseModel):                             # ← NEW (optional 
     priority_level:       str
     recommended_routes:   list[RecommendedRoute]
     node_risks:           dict
+    city_coordinates:     Optional[dict] = None
+    baseline_fastest_route: Optional[dict] = None
+    baseline_safest_route:  Optional[dict] = None
+    risk_checked_at:      Optional[str] = None
+    risk_sources:         Optional[dict] = None
 
 class GeminiDecisionOutput(BaseModel):
     recommended_option: int   = Field(description="Option number (1, 2, or 3) that is recommended.")
@@ -395,6 +405,8 @@ class LiveTrackRequest(BaseModel):
     delivery_type: str
     category: str
     dispatch_date: str
+    mock_disruption_city: str
+    mock_disruption_type: str
 
 # ============================================================
 # ROUTE BUILDING HELPERS
@@ -442,7 +454,131 @@ def is_edge_allowed(edge_data, delivery_type):
     if delivery_type == "Only Truck": return mode == "Truck"
     if delivery_type == "No Air":     return mode != "Air"
     if delivery_type == "No Ocean":   return mode != "Ocean"
+    if delivery_type == "No Truck":   return mode != "Truck"
     return True
+
+
+def format_risk_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
+
+
+def enrich_risk_snapshot(risk_data: dict, checked_at_ts: float) -> dict:
+    snapshot = dict(risk_data) if isinstance(risk_data, dict) else {}
+    snapshot["checked_at"] = format_risk_timestamp(checked_at_ts)
+    snapshot["sources"] = dict(RISK_SIGNAL_SOURCES)
+    return snapshot
+
+
+def stamp_node_risks(node_risks: dict, checked_at_ts: float) -> dict:
+    return {
+        city: enrich_risk_snapshot(risk_data, checked_at_ts)
+        for city, risk_data in node_risks.items()
+    }
+
+
+def route_signature(route: dict) -> tuple:
+    return tuple(
+        (leg.get("from"), leg.get("to"), leg.get("mode"))
+        for leg in route.get("route", [])
+    )
+
+
+def attach_matching_option(route: Optional[dict], ranked_routes: list[dict]) -> Optional[dict]:
+    if not route:
+        return None
+
+    route_with_option = dict(route)
+    signature = route_signature(route_with_option)
+    matched_route = next(
+        (candidate for candidate in ranked_routes if route_signature(candidate) == signature),
+        None,
+    )
+    route_with_option["option"] = matched_route["option"] if matched_route else None
+    return route_with_option
+
+
+def evaluate_route_combo(
+    combo,
+    G_filtered: nx.MultiDiGraph,
+    node_risks: dict,
+    quantity: float,
+    has_forced_hubs: bool,
+    apply_risk_penalty: bool = True,
+    enforce_risk_block: bool = True,
+) -> Optional[dict]:
+    total_time = 0.0
+    max_route_risk = 0.0
+    route_details = []
+    blocked = False
+    hub_forced_high_risk = False
+    risk_penalty_multiplier = 10.0
+
+    for leg_path in combo:
+        if blocked:
+            break
+
+        for i in range(len(leg_path) - 1):
+            u = leg_path[i]
+            v = leg_path[i + 1]
+
+            city_u = normalize_city(id_to_city[u])
+            city_v = normalize_city(id_to_city[v])
+            risk_u = node_risks.get(city_u, {}).get("risk", 0.0)
+            risk_v = node_risks.get(city_v, {}).get("risk", 0.0)
+
+            edge_risk = max(risk_u, risk_v)
+            reason_u = node_risks.get(city_u, {}).get("reason", "Normal")
+            reason_v = node_risks.get(city_v, {}).get("reason", "Normal")
+            edge_reason = reason_u if risk_u >= risk_v else reason_v
+
+            if edge_risk >= 0.8:
+                if enforce_risk_block and not has_forced_hubs:
+                    blocked = True
+                    break
+                if has_forced_hubs:
+                    hub_forced_high_risk = True
+
+            edge_options = G_filtered[u][v]
+            best_key = min(edge_options, key=lambda kk: edge_options[kk]["weight"])
+            best_edge = edge_options[best_key]
+
+            leg_base_time = best_edge["weight"]
+            if route_details:
+                leg_base_time *= 0.7
+
+            leg_time = leg_base_time
+            if apply_risk_penalty:
+                leg_time += edge_risk * risk_penalty_multiplier
+
+            total_time += leg_time
+            max_route_risk = max(max_route_risk, edge_risk)
+
+            if not (route_details and route_details[-1]["to"] == id_to_city[v]):
+                distance_km = best_edge.get("distance_km", best_edge.get("distance", 100))
+                carbon_kg = calculate_carbon_kg(distance_km, best_edge["mode"], float(quantity))
+                route_details.append({
+                    "from":        id_to_city[u],
+                    "to":          id_to_city[v],
+                    "mode":        best_edge["mode"],
+                    "days":        round(float(leg_time), 2),
+                    "base_time":   round(float(best_edge["base_time"]), 2),
+                    "risk_score":  round(edge_risk, 2),
+                    "risk_reason": edge_reason,
+                    "carbon_kg":   carbon_kg,
+                })
+
+    if blocked or not route_details:
+        return None
+
+    total_carbon_kg = sum(leg.get("carbon_kg", 0) for leg in route_details)
+    return {
+        "total_transit_days": round(float(total_time), 2),
+        "route_risk_level": round(max_route_risk, 2),
+        "total_carbon_kg": round(total_carbon_kg, 2),
+        "route": route_details,
+        "forced_through_hubs": has_forced_hubs,
+        "has_high_risk_hub": hub_forced_high_risk,
+    }
 
 # ============================================================
 # Function to find top k routes definition
@@ -615,7 +751,7 @@ def find_top_route(
 
             if not (route_details and route_details[-1]["to"] == id_to_city[v]):
                 # Calculate carbon emissions (does NOT affect routing logic)
-                distance_km = best_edge.get("distance", 100)  # fallback distance if not available
+                distance_km = best_edge.get("distance_km", best_edge.get("distance", 100))
                 carbon_kg = calculate_carbon_kg(distance_km, best_edge["mode"], float(query.quantity))
                 
                 route_details.append({
@@ -668,28 +804,37 @@ def health_check():
 
 @app.post("/find_route")
 def find_route(query: RouteRequest):
-    # ── Validate cities ──
-    if query.source_city not in city_to_id:
-        raise HTTPException(status_code=404, detail=f"Source city '{query.source_city}' not found.")
-    if query.target_city not in city_to_id:
-        raise HTTPException(status_code=404, detail=f"Destination city '{query.target_city}' not found.")
+    # ── 1. Validate cities ──
+    if query.source_city not in city_to_id or query.target_city not in city_to_id:
+        raise HTTPException(status_code=404, detail="Source or Destination not found.")
 
-    # ── Validate transit hubs (raise 400 instead of silently dropping) ──
-    hub_ids = []
-    for hub in (query.transit_hubs or []):
-        if hub not in city_to_id:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Transit hub '{hub}' was not found in the routing graph. "
-                       "Please check the city name and try again."
-            )
-        hub_ids.append(city_to_id[hub])
-
-    src_id    = city_to_id[query.source_city]
-    tgt_id    = city_to_id[query.target_city]
+    src_id = city_to_id[query.source_city]
+    tgt_id = city_to_id[query.target_city]
+    hub_ids = [city_to_id[h] for h in (query.transit_hubs or []) if h in city_to_id]
     waypoints = [src_id] + hub_ids + [tgt_id]
 
-    # ── PASS 1: ML baseline ──
+    # ── 2. PRE-ROUTE RISK ASSESSMENT (NEW PLACEMENT) ──
+    current_time = time.time()
+    mock_disruption_city_resolved = None
+    node_risks = {}
+
+    if query.mock_disruption_city:
+        mock_input = normalize_city(query.mock_disruption_city)
+        if mock_input in city_to_id:
+            mock_disruption_city_resolved = mock_input
+            
+            # Fetch fresh risk for the disrupted city immediately
+            print(f"🔄 Assessing manual disruption for: {mock_disruption_city_resolved}")
+            fresh_risks = assess_route_risk(
+                [mock_disruption_city_resolved],
+                mock_disruption_city=mock_disruption_city_resolved,
+                mock_disruption_type=query.mock_disruption_type,
+            )
+            node_risks = enrich_risk_snapshot(fresh_risks.get(mock_disruption_city_resolved, {}), current_time)
+            # Store back in node_risks for the penalty logic
+            node_risks = {mock_disruption_city_resolved: node_risks}
+
+    # ── 3. PASS 1: ML Prediction & Manual Risk Weighting ──
     dt, modified_features = build_request_edge_features(query)
     new_edge_attr = torch.tensor(edge_scaler.transform(modified_features), dtype=torch.float)
 
@@ -698,41 +843,50 @@ def find_route(query: RouteRequest):
             x_tensor, edge_index_tensor, new_edge_attr, edge_index_tensor
         ).view(-1).cpu().numpy()
 
+    G_local = G.copy()
     for idx, (u, v, k) in enumerate(edge_order):
-        edge_data = G[u][v][k]
-        delay = float(predictions[idx])
-        delay=max(0.0,delay)
+        edge_data = G_local[u][v][k]
+        delay = max(0.0, float(predictions[idx]))
         physics_time = edge_data["base_time"]
         final_time = physics_time + delay
+
+        # --- Target disruption penalty ---
+        if mock_disruption_city_resolved:
+            u_name = id_to_city[u]
+            v_name = id_to_city[v]
+            
+            # If the edge is incoming to or outgoing from the disrupted city
+            if u_name == mock_disruption_city_resolved or v_name == mock_disruption_city_resolved:
+                risk_score = node_risks.get(mock_disruption_city_resolved, {}).get("risk", 0.0)
+                risk_multiplier = 1.0 + (risk_score * 5.0) # Elevated sensitivity for pre-route pathfinding
+                
+                if risk_score > 0.4:
+                    final_time *= risk_multiplier
+                    print(f"⚠️ Penalizing disrupted edge: {u_name} -> {v_name} | New Weight: {final_time:.2f}")
+
+        # --- Country Border Penalty ---
         if edge_data["source_country"] != edge_data["target_country"]:
-    # if both source and final destination are same country
-            if id_to_city[src_id] and id_to_city[tgt_id]:
-                src_country = nodes_data[id_map[src_id]]["country"]
-                tgt_country = nodes_data[id_map[tgt_id]]["country"]
+            src_country = nodes_data[id_map[src_id]]["country"]
+            tgt_country = nodes_data[id_map[tgt_id]]["country"]
+            if src_country == tgt_country:
+                final_time *= 1000  
 
-                if src_country == tgt_country:
-                    final_time *= 1000   # strong penalty
-        G[u][v][k]["weight"] = final_time
+        G_local[u][v][k]["weight"] = final_time
 
-    # ── PASS 2: Filter graph by delivery type ──
-    print("Filtering graph by delivery type")
+    # ── 4. FILTER & FLATTEN ──
     G_filtered = nx.MultiDiGraph()
-    for u, v, k in G.edges(keys=True):
-        if is_edge_allowed(G[u][v][k], query.delivery_type):
-            G_filtered.add_edge(u, v, key=k, **G[u][v][k])
-    G_filtered.add_nodes_from(G.nodes(data=True))
-
-    # Flatten to simple DiGraph (keep fastest mode per pair) for path search
+    for u, v, k in G_local.edges(keys=True):
+        if is_edge_allowed(G_local[u][v][k], query.delivery_type):
+            G_filtered.add_edge(u, v, key=k, **G_local[u][v][k])
+    
     G_simple = nx.DiGraph()
     for u, v, k, data in G_filtered.edges(keys=True, data=True):
         w = data["weight"]
-        if G_simple.has_edge(u, v):
-            if w < G_simple[u][v]["weight"]:
-                G_simple[u][v]["weight"] = w
-        else:
+        if not G_simple.has_edge(u, v) or w < G_simple[u][v]["weight"]:
             G_simple.add_edge(u, v, weight=w)
 
-    # ── Generate top-10 candidate paths per leg ──
+    # ── 5. GENERATE PATHS ──
+    # Paths found here will now naturally avoid the mock_disruption_city if a better path exists
     try:
         segment_options = []
         for i in range(len(waypoints) - 1):
@@ -742,169 +896,55 @@ def find_route(query: RouteRequest):
             segment_options.append(list(islice(paths_gen, 10)))
         all_combinations = list(product(*segment_options))
     except nx.NetworkXNoPath:
-        raise HTTPException(status_code=404, detail="No compliant baseline route exists.")
+        raise HTTPException(status_code=404, detail="No compliant route exists under current conditions.")
 
-        # ── Collect unique cities needed across all candidate paths ──
-    unique_city_ids = set()
-    for combo in all_combinations:
-        for leg in combo:
-            unique_city_ids.update(leg)
-
-    unique_city_names = [normalize_city(id_to_city[nid]) for nid in unique_city_ids]
-
-    print("\n" + "🔍" * 20)
-    print(f"[DEBUG] Unique cities in route: {unique_city_names}")
-    print(f"[DEBUG] Incoming mock_disruption_city from frontend: '{query.mock_disruption_city}'")
-    print(f"[DEBUG] Incoming mock_disruption_type from frontend: '{query.mock_disruption_type}'")
-
-    # Resolve mock city exactly as stored in graph
-    mock_disruption_city_resolved = None
-    if query.mock_disruption_city:
-        mock_input = normalize_city(query.mock_disruption_city)
-        if mock_input in city_to_id:
-            mock_disruption_city_resolved = mock_input
-            print(f"✅ Mock city EXACT match: '{mock_input}'")
-        else:
-            print(f"❌ Mock city '{mock_input}' NOT found in city_to_id!")
-
-    current_time = time.time()
-    cities_to_fetch = []
-    node_risks = {}
-
-    for city in unique_city_names:
-        if mock_disruption_city_resolved and city == mock_disruption_city_resolved:
-            print(f"🔄 Forcing re-fetch + chaos for: {city}")
-            cities_to_fetch.append(city)
-        elif city in RISK_CACHE and (current_time - RISK_CACHE[city]["timestamp"]) < CACHE_TTL_SECONDS:
-            node_risks[city] = RISK_CACHE[city]["data"]
-        else:
-            cities_to_fetch.append(city)
-
-    print(f"🌍 Cities that will be fetched now: {cities_to_fetch}")
-
-    if cities_to_fetch:
-        print("🚀 Calling assess_route_risk with chaos...")
-        fresh_risks = assess_route_risk(
-            cities_to_fetch,
-            mock_disruption_city=mock_disruption_city_resolved,
-            mock_disruption_type=query.mock_disruption_type,
-        )
-
-        for city, risk_data in fresh_risks.items():
-            if city != mock_disruption_city_resolved:
-                RISK_CACHE[city] = {"data": risk_data, "timestamp": current_time}
-            node_risks[city] = risk_data
-
-        # Extra debug
-        if mock_disruption_city_resolved and mock_disruption_city_resolved in node_risks:
-            print(f"🎯 Final node_risk for mock city → {mock_disruption_city_resolved}: {node_risks[mock_disruption_city_resolved]}")
-        else:
-            print(f"❌ mock city '{mock_disruption_city_resolved}' missing from final node_risks!")
-
-    # ... rest of your function (scored_combinations, top_3, return) stays exactly the same
-
-        # ── Score all candidate combinations ──
-    RISK_PENALTY_MULTIPLIER = 10.0
+    # ── 6. FINAL EVALUATION ──
+    # (Existing scoring and response logic follows...)
     scored_combinations = []
+    baseline_candidates = []
     has_forced_hubs = bool(query.transit_hubs)
 
     for combo in all_combinations:
-        total_time        = 0.0
-        max_route_risk    = 0.0
-        route_details     = []
-        blocked           = False
-        hub_forced_high_risk = False
+        # Standard Baseline
+        bc = evaluate_route_combo(combo, G_filtered, node_risks, float(query.quantity), has_forced_hubs, False, False)
+        if bc: baseline_candidates.append(bc)
 
-        for leg_path in combo:
-            if blocked:
-                break
-
-            for i in range(len(leg_path) - 1):
-                u = leg_path[i]
-                v = leg_path[i + 1]
-
-                city_u = normalize_city(id_to_city[u])
-                city_v = normalize_city(id_to_city[v])
-                risk_u = node_risks.get(city_u, {}).get("risk", 0.0)
-                risk_v = node_risks.get(city_v, {}).get("risk", 0.0)
-
-                edge_risk   = max(risk_u, risk_v)
-                reason_u    = node_risks.get(city_u, {}).get("reason", "Normal")
-                reason_v    = node_risks.get(city_v, {}).get("reason", "Normal")
-                edge_reason = reason_u if risk_u >= risk_v else reason_v
-
-                # ── FIXED LOGIC ──
-                # Transit hubs are now sacred — never hard-block them
-                if edge_risk >= 0.8:
-                    if not has_forced_hubs:
-                        blocked = True
-                        break
-                    else:
-                        hub_forced_high_risk = True
-
-                # Best edge (mode) between these two cities
-                edge_options = G_filtered[u][v]
-                best_key     = min(edge_options, key=lambda kk: edge_options[kk]["weight"])
-                best_edge    = edge_options[best_key]
-
-                # Check if this edge is from an intermediate city (not source)
-                # Intermediate edges get reduced time due to cross-dock efficiency
-                leg_base_time = best_edge["weight"]
-                
-                # Check if current edge is NOT the first edge from source
-                # All edges after the first one get time reduction (cross-dock efficiency)
-                if len(route_details) > 0:
-                    # This is not the first edge, apply time reduction
-                    leg_base_time *= 0.7  # 30% reduction for cross-dock efficiency
-                
-                leg_time = leg_base_time + (edge_risk * RISK_PENALTY_MULTIPLIER)
-                total_time += leg_time
-
-                if edge_risk > max_route_risk:
-                    max_route_risk = edge_risk
-
-                if not (route_details and route_details[-1]["to"] == id_to_city[v]):
-                    # Calculate carbon emissions (does NOT affect routing logic)
-                    distance_km = best_edge.get("distance", 100)  # fallback distance if not available
-                    carbon_kg = calculate_carbon_kg(distance_km, best_edge["mode"], float(query.quantity))
-                    
-                    route_details.append({
-                        "from":        id_to_city[u],
-                        "to":          id_to_city[v],
-                        "mode":        best_edge["mode"],
-                        "days":        round(float(leg_time), 2),
-                        "base_time":   round(float(best_edge["base_time"]), 2),
-                        "risk_score":  round(edge_risk, 2),
-                        "risk_reason": edge_reason,
-                        "carbon_kg":   carbon_kg,  # Only for display, not used in routing
-                    })
-
-        if not blocked:
-            # Calculate total carbon emissions for the entire route (display only)
-            total_carbon_kg = sum(leg.get("carbon_kg", 0) for leg in route_details)
-            
-            scored_combinations.append({
-                "total_transit_days": round(float(total_time), 2),
-                "route_risk_level":   round(max_route_risk, 2),
-                "total_carbon_kg":     round(total_carbon_kg, 2),  # Display only
-                "route":              route_details,
-                "forced_through_hubs": has_forced_hubs,
-                "has_high_risk_hub":   hub_forced_high_risk,
-            })
+        # Risk Adjusted 
+        rac = evaluate_route_combo(combo, G_filtered, node_risks, float(query.quantity), has_forced_hubs, True, True)
+        if rac: scored_combinations.append(rac)
 
     if not scored_combinations:
-        raise HTTPException(
-            status_code=404,
-            detail="No compliant route exists even after forcing your transit hubs."
-        )
+        raise HTTPException(status_code=404, detail="No compliant route exists after risk adjustment.")
 
     scored_combinations.sort(key=lambda x: x["total_transit_days"])
     top_3 = scored_combinations[:3]
-    for i, route in enumerate(top_3):
-        route["option"] = i + 1
+    for i, route in enumerate(top_3): route["option"] = i + 1
+
+    baseline_fastest_route = min(
+        baseline_candidates,
+        key=lambda route: (route["total_transit_days"], route["route_risk_level"]),
+    )
+    baseline_safest_route = min(
+        baseline_candidates,
+        key=lambda route: (route["route_risk_level"], route["total_transit_days"]),
+    )
+
+    baseline_fastest_route = attach_matching_option(baseline_fastest_route, top_3)
+    baseline_safest_route = attach_matching_option(baseline_safest_route, top_3)
 
     # ── Final response (now type-safe and UI-friendly) ──
-        # ── Final response (now includes coordinates for the map)
+    route_cities = set()
+    for route in top_3:
+        for leg in route["route"]:
+            route_cities.add(leg["from"])
+            route_cities.add(leg["to"])
+
+    city_coordinates = {
+        city: city_to_coordinates[city]
+        for city in route_cities
+        if city in city_to_coordinates
+    }
+
     return {
         "source":             query.source_city,
         "target":             query.target_city,
@@ -916,6 +956,11 @@ def find_route(query: RouteRequest):
         "priority_level":     query.priority_level,
         "recommended_routes": top_3,
         "node_risks":         node_risks,
+        "city_coordinates":   city_coordinates,
+        "baseline_fastest_route": baseline_fastest_route,
+        "baseline_safest_route":  baseline_safest_route,
+        "risk_checked_at":    format_risk_timestamp(current_time),
+        "risk_sources":       RISK_SIGNAL_SOURCES,
     }
 
 @app.post("/select_best_route")
@@ -996,11 +1041,13 @@ def live_track(req: LiveTrackRequest):
     # The usable output is result["final_risk"]:
     #   { "Mumbai": {"risk": 0.7, "reason": "...", "components": {...}}, ... }
     try:
-        node_risks = assess_route_risk(remaining_cities)
+        risk_checked_ts = time.time()
+        node_risks = stamp_node_risks(assess_route_risk(remaining_cities, req.mock_disruption_city, req.mock_disruption_type), risk_checked_ts)
         print(f"✅ node_risks: {node_risks}")
     except Exception as e:
         print(f"❌ Risk assessment failed: {e}")
         node_risks = {}
+        risk_checked_ts = time.time()
  
     # ── Detect high-risk cities ───────────────────────────────────────────────
     # node_risks values are always dicts like {"risk": float, "reason": str, ...}
@@ -1016,6 +1063,8 @@ def live_track(req: LiveTrackRequest):
             "message":    "No high-risk cities on remaining route",
             "flag":       0,
             "node_risks": node_risks,
+            "risk_checked_at": format_risk_timestamp(risk_checked_ts),
+            "risk_sources": RISK_SIGNAL_SOURCES,
         }
  
     print(f"⚠️ High-risk cities: {high_risk_cities} — finding alternate route")
@@ -1042,6 +1091,8 @@ def live_track(req: LiveTrackRequest):
             "message":    e.detail,
             "flag":       0,
             "node_risks": node_risks,
+            "risk_checked_at": format_risk_timestamp(risk_checked_ts),
+            "risk_sources": RISK_SIGNAL_SOURCES,
         }
  
     print(f"✅ Re-route found: {best_route['total_transit_days']} days, "
@@ -1077,6 +1128,8 @@ def live_track(req: LiveTrackRequest):
         "recommended_routes": [best_route],
         "node_risks":         node_risks,
         "updated_route":      updated_route,
+        "risk_checked_at":    format_risk_timestamp(risk_checked_ts),
+        "risk_sources":       RISK_SIGNAL_SOURCES,
     }
 
 if __name__ == "__main__":

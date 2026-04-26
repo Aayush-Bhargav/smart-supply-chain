@@ -26,6 +26,8 @@ export const saveShipment = async ({
   recommended_routes,
   selected_option,
   node_risks,
+  risk_checked_at,
+  risk_sources,
   
   ai_recommendation, // Add AI recommendation
 }: any) => {
@@ -74,7 +76,6 @@ export const saveShipment = async ({
           recommended_routes,
           selected_route_option: firstRoute.option, // Use fallback option
           node_risks,
-          
           ai_recommendation,
           selected_route: {
             option: firstRoute.option,
@@ -85,6 +86,8 @@ export const saveShipment = async ({
           status: "in_transit",
           created_at: serverTimestamp(),
           updated_at: serverTimestamp(),
+          ...(risk_checked_at ? { risk_checked_at } : {}),
+          ...(risk_sources ? { risk_sources } : {}),
         });
 
         return docRef.id;
@@ -151,6 +154,8 @@ export const saveShipment = async ({
       // ⏱️ Timestamps
       created_at: serverTimestamp(),
       updated_at: serverTimestamp(),
+      ...(risk_checked_at ? { risk_checked_at } : {}),
+      ...(risk_sources ? { risk_sources } : {}),
     });
 
     return docRef.id;

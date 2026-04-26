@@ -5,12 +5,13 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { signOut } from "firebase/auth";
 import { auth } from "@/lib/firebase";
-import { MapPin, Package, Clock, Calendar, Loader2, Truck, BarChart3 } from 'lucide-react';
+import { MapPin, Package, Clock, Calendar, Loader2, Truck, BarChart3, AlertTriangle } from 'lucide-react';
 import { RouteRequest } from '@/types/route';
 import CityAutocomplete from '@/components/CityAutocomplete';
 import TransitHubs from '@/components/TransitHubs';
 import Link from 'next/link';
 import { apiUrl } from '@/lib/api';
+import CustomSelect from '@/components/route/CustomSelect';
 
 const CATEGORIES = [
   "Accessories", "As Seen on TV!", "Baby", "Baseball & Softball", "Basketball",
@@ -25,21 +26,31 @@ const CATEGORIES = [
   "Water Sports", "Women's Apparel", "Women's Clothing", "Women's Golf Clubs",
 ];
 
+const DISASTER_VECTORS = [
+  { value: "Weather", label: "Hurricane / Storm" },
+  { value: "Logistics", label: "Labour Strike / Port Closure" },
+  { value: "Geopolitical", label: "Border / Conflict Blockade" },
+];
+
 const DELIVERY_TYPES = [
   { value: "Only Ocean", label: "Only Ocean" },
   { value: "Only Air",   label: "Only Air" },
   { value: "Only Truck", label: "Only Truck" },
-  { value: "No Air",     label: "No Air" },
   { value: "No Ocean",   label: "No Ocean" },
-  { value: "None",       label: "None" },
+  { value: "No Air",     label: "No Air" },
+  { value: "No Truck",       label: "No Truck" },
+  { value: "Any",       label: "Any" },
 ];
 
 const PRIORITY_LEVELS = [
   { value: "Standard Class", label: "Standard Class" },
   { value: "Second Class",   label: "Second Class" },
   { value: "First Class",    label: "First Class" },
-
 ];
+
+const inputClass = "w-full bg-white/10 border border-zinc-800 text-white rounded-xl px-4 py-3 pt-2 outline-none focus:border-blue-400 transition-all";
+const selectClass = `${inputClass} appearance-none`;
+const labelClass = "block text-xs font-semibold uppercase tracking-widest text-slate-400 mb-2";
 
 export default function Home() {
   const router = useRouter();
@@ -53,7 +64,7 @@ export default function Home() {
     priority_level:       'Standard Class',
     dispatch_date:        new Date().toISOString().slice(0, 16),
     scheduled_days:       null,
-    delivery_type:        'None',
+    delivery_type:        'Any',
     transit_hubs:         [],
     mock_disruption_city: null,
     mock_disruption_type: null,
@@ -61,33 +72,26 @@ export default function Home() {
 
   const [isSimulationMode, setIsSimulationMode] = useState(false);
   const [loader, setLoader] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoader(true);
     setError(null);
-
-    // Clear stale data so a failed mid-flight request never shows old results
     sessionStorage.removeItem('currentRouteData');
-
     try {
-      console.log('🚨 FRONTEND TRIGGER: Calling /find_route API');
       const res = await fetch(apiUrl('/find_route'), {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(formData),
       });
-
       if (!res.ok) {
         const errorData = await res.json();
         throw new Error(errorData.detail || 'Failed to find route');
       }
-
       const data = await res.json();
       sessionStorage.setItem('currentRouteData', JSON.stringify(data));
       router.push('/route');
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -98,254 +102,259 @@ export default function Home() {
   const handleInputChange = (field: keyof RouteRequest, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
-  // use effect for user authentication session testing
-
 
   useEffect(() => {
-    if (!loading && !user) {
-      router.push("/login");
-    }
+    if (!loading && !user) router.push("/login");
   }, [user, loading]);
 
-
-
-
   return (
-    <div className="min-h-screen">
-      <div className="container mx-auto px-4 py-8">
+    <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-slate-900 to-indigo-950">
+
+      {/* Ambient blobs — same as dashboard */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-40 -right-40 w-80 h-80 bg-purple-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse" />
+        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-blue-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse animation-delay-2000" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-indigo-500 rounded-full mix-blend-multiply filter blur-xl opacity-10 animate-pulse animation-delay-4000" />
+      </div>
+
+      <div className="relative z-10 container mx-auto px-4 py-8">
 
         {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-5xl font-bold gradient-text mb-3">
-            Supply Chain Route Optimizer
-          </h1>
-          <p className="text-xl text-gray-600 font-medium">
-            AI-powered route optimization for global logistics
-          </p>
-          <div className="flex items-center space-x-4">
-            <Link
-              href="/dashboard"
-              className="flex items-center px-4 py-2 text-gray-700 hover:text-white hover:bg-blue-600 transition-all duration-200 rounded-lg font-medium"
-            >
-              <BarChart3 className="w-4 h-4 mr-2" />
-              Dashboard
-            </Link>
-            <button onClick={() => signOut(auth)} className="flex items-center px-4 py-2 text-gray-700 hover:text-white hover:bg-blue-600 transition-all duration-200 rounded-lg font-medium">
-              Logout
-            </button>
+        <div className="mb-10">
+          <div className="bg-white/5 backdrop-blur-lg border-b border-white/10 -mx-4 px-4 py-5 mb-8 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Package className="w-7 h-7 text-blue-400" />
+              <div>
+                <h1 className="text-2xl font-bold text-white">Supply Chain Route Optimizer</h1>
+                <p className="text-sm text-slate-400">AI-powered route optimization for global logistics</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Link
+                href="/dashboard"
+                className="flex items-center gap-2 px-4 py-2 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg text-sm font-medium transition-all"
+              >
+                <BarChart3 className="w-4 h-4" /> Dashboard
+              </Link>
+              <button
+                onClick={() => signOut(auth)}
+                className="flex items-center px-4 py-2 text-slate-300 hover:text-white hover:bg-white/10 rounded-lg text-sm font-medium transition-all"
+              >
+                Sign Out
+              </button>
+            </div>
           </div>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-8">
 
-          {/* Form Section */}
-          <div className="space-y-6">
-            <div className="card p-8 hover-lift">
-              <h2 className="text-3xl font-bold mb-8 flex items-center gradient-text">
-                <Package className="mr-3 text-blue-600" size={32} />
-                Route Configuration
-              </h2>
+          {/* ── Form ── */}
+          <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-2xl p-8">
+            <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-3">
+              <Package className="w-5 h-5 text-blue-400" />
+              Route Configuration
+            </h2>
 
-              <form onSubmit={handleSubmit} className="form-section">
+            <form onSubmit={handleSubmit} className="space-y-5">
 
-                <div>
-                  <label className="form-label">Origin City</label>
-                  <CityAutocomplete
-                    value={formData.source_city}
-                    onChange={(value) => handleInputChange('source_city', value)}
-                    placeholder="e.g., New York City"
+              <div>
+                <label className={`${labelClass} flex items-center`}>
+                        <MapPin className="w-3.5 h-3.5 mr-2 text-sky-400" />
+                        source city
+                </label>
+                <CityAutocomplete
+                  value={formData.source_city}
+                  onChange={(v) => handleInputChange('source_city', v)}
+                  placeholder="e.g., New York City"
+                />
+              </div>
+
+              <div>
+              <label className={`${labelClass} flex items-center`}>
+                        <MapPin className="w-3.5 h-3.5 mr-2 text-sky-400" />
+                        destination city
+                </label>
+                <CityAutocomplete
+                  value={formData.target_city}
+                  onChange={(v) => handleInputChange('target_city', v)}
+                  placeholder="e.g., Los Angeles"
+                />
+              </div>
+
+              <TransitHubs
+                  value={formData.transit_hubs ?? []}
+                  onChange={(hubs) => handleInputChange('transit_hubs', hubs)}
+                />
+
+              <CustomSelect
+                label="Product Category"
+                icon={Package}
+                value={formData.category_name}
+                options={CATEGORIES}
+                onChange={(val) => handleInputChange('category_name', val)}
+              />
+
+              <div className="grid grid-cols-8 gap-4">
+                {/* Quantity: Takes 1/7th of the space */}
+                <div className="col-span-2">
+                  <label className={labelClass}>Quantity</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    className={inputClass}
+                    value={formData.quantity}
+                    onChange={(e) => handleInputChange('quantity', parseFloat(e.target.value))}
                   />
                 </div>
 
-                <div>
-                  <label className="form-label">Destination City</label>
-                  <CityAutocomplete
-                    value={formData.target_city}
-                    onChange={(value) => handleInputChange('target_city', value)}
-                    placeholder="e.g., Los Angeles"
+                {/* Priority Level: Takes 3/7ths of the space */}
+                <div className="col-span-3">
+                  <CustomSelect
+                    label="Priority Level"
+                    icon={Clock}
+                    value={formData.priority_level}
+                    options={PRIORITY_LEVELS}
+                    onChange={(val) => handleInputChange('priority_level', val)}
                   />
                 </div>
 
-                <div>
-                  <label className="form-label">
-                    <Package className="inline w-5 h-5 mr-2 text-blue-600" />
-                    Product Category
-                  </label>
-                  <select
-                    className="input-field"
-                    value={formData.category_name}
-                    onChange={(e) => handleInputChange('category_name', e.target.value)}
-                  >
-                    {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                {/* Delivery Type: Takes 3/7ths of the space */}
+                <div className="col-span-3">
+                  <CustomSelect
+                    label="Delivery Type"
+                    icon={Truck}
+                    value={formData.delivery_type}
+                    options={DELIVERY_TYPES}
+                    onChange={(val) => handleInputChange('delivery_type', val)}
+                  />
                 </div>
+              </div>
 
-                <div className="grid grid-cols-2 gap-4">
+              <div>
+              <label className={`${labelClass} flex items-center`}>
+                        <Calendar className="w-3.5 h-3.5 mr-2 text-sky-400" />
+                        dispatch date & time
+                </label>
+                <input
+                  type="datetime-local" required
+                  className={inputClass}
+                  value={formData.dispatch_date}
+                  onChange={(e) => handleInputChange('dispatch_date', e.target.value)}
+                />
+              </div>
+
+              {/* Chaos Simulator — matches dashboard version */}
+              <div className={`rounded-2xl border p-5 transition-all duration-500 ${
+                isSimulationMode
+                  ? 'border-red-500/40 bg-red-950/20'
+                  : 'border-white/10 bg-white/5'
+              }`}>
+                <div className="flex items-center justify-between">
                   <div>
-                    <label className="form-label">Quantity</label>
+                    <div className="flex items-center gap-2.5">
+                      <div className={`h-2.5 w-2.5 rounded-full ${isSimulationMode ? 'bg-red-500 animate-ping' : 'bg-slate-600'}`} />
+                      <span className="text-xs font-bold uppercase tracking-widest text-white">Chaos Simulator</span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {isSimulationMode ? 'Targeting nodes for synthetic disruption.' : 'Running on real-world telemetry.'}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
                     <input
-                      type="number" min="1" step="0.1" required
-                      className="input-field"
-                      value={formData.quantity}
-                      onChange={(e) => handleInputChange('quantity', parseFloat(e.target.value))}
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={isSimulationMode}
+                      onChange={() => {
+                        setIsSimulationMode(!isSimulationMode);
+                        if (isSimulationMode) {
+                          handleInputChange('mock_disruption_city', null);
+                          handleInputChange('mock_disruption_type', null);
+                        }
+                      }}
+                    />
+                    <div className="w-10 h-5 bg-slate-700 rounded-full peer peer-checked:after:translate-x-5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-500" />
+                  </label>
+                </div>
+
+                {isSimulationMode && (
+                  <div className="grid grid-cols-2 gap-3 mt-4">
+                    <div>
+                      <label className={labelClass}>Target Zone</label>
+                      <CityAutocomplete
+                        value={formData.mock_disruption_city || ''}
+                        onChange={(v) => handleInputChange('mock_disruption_city', v)}
+                        placeholder="Search city..."
+                      />
+                    </div>
+                  <div>
+                    <CustomSelect
+                      label="Disaster Vector"
+                      icon={AlertTriangle} // Or use Zap / ShieldAlert from lucide-react
+                      value={formData.mock_disruption_type || ''}
+                      options={DISASTER_VECTORS}
+                      placeholder="Select type..."
+                      onChange={(val) => handleInputChange('mock_disruption_type', val)}
                     />
                   </div>
-
-                  <div>
-                    <label className="form-label">
-                      <Clock className="inline w-5 h-5 mr-2 text-blue-600" />
-                      Priority Level
-                    </label>
-                    <select
-                      className="input-field"
-                      value={formData.priority_level}
-                      onChange={(e) => handleInputChange('priority_level', e.target.value)}
-                    >
-                      {PRIORITY_LEVELS.map(p => (
-                        <option key={p.value} value={p.value}>{p.label}</option>
-                      ))}
-                    </select>
                   </div>
+                )}
+              </div>
 
-                  <div>
-                    <label className="form-label">
-                      <Truck className="inline w-5 h-5 mr-2 text-blue-600" />
-                      Delivery Type
-                    </label>
-                    <select
-                      className="input-field"
-                      value={formData.delivery_type}
-                      onChange={(e) => handleInputChange('delivery_type', e.target.value)}
-                    >
-                      {DELIVERY_TYPES.map(d => (
-                        <option key={d.value} value={d.value}>{d.label}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <TransitHubs
-                    value={formData.transit_hubs ?? []}
-                    onChange={(hubs) => handleInputChange('transit_hubs', hubs)}
-                  />
-                </div>
-
-                <div>
-                  <label className="form-label">
-                    <Calendar className="inline w-5 h-5 mr-2 text-blue-600" />
-                    Dispatch Date &amp; Time
-                  </label>
-                  <input
-                    type="datetime-local" required
-                    className="input-field"
-                    value={formData.dispatch_date}
-                    onChange={(e) => handleInputChange('dispatch_date', e.target.value)}
-                  />
-                </div>
-
-                {/* Chaos Engine Simulator */}
-                <div className="mt-8 p-6 bg-slate-900 border border-blue-500/30 rounded-xl">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xl font-bold text-red-400 flex items-center">
-                      ⚡ Chaos Engine Simulation
-                    </h3>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        className="sr-only peer"
-                        checked={isSimulationMode}
-                        onChange={() => {
-                          setIsSimulationMode(!isSimulationMode);
-                          if (isSimulationMode) {
-                            handleInputChange('mock_disruption_city', null);
-                            handleInputChange('mock_disruption_type', null);
-                          }
-                        }}
-                      />
-                      <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-500" />
-                    </label>
-                  </div>
-
-                  {isSimulationMode && (
-                    <div className="grid grid-cols-2 gap-4 animate-fadeIn">
-                      <div>
-                        <label className="form-label text-gray-300">Target City</label>
-                        <CityAutocomplete
-                          value={formData.mock_disruption_city || ''}
-                          onChange={(value) => handleInputChange('mock_disruption_city', value)}
-                          placeholder="e.g., Miami"
-                        />
-                      </div>
-                      <div>
-                        <label className="form-label text-gray-300">Disaster Type</label>
-                        <select
-                          className="input-field bg-slate-800 text-white border-slate-700"
-                          value={formData.mock_disruption_type || ''}
-                          onChange={(e) => handleInputChange('mock_disruption_type', e.target.value)}
-                        >
-                          <option value="">Select Disaster...</option>
-                          <option value="Weather">Category 5 Hurricane</option>
-                          <option value="Logistics">Massive Port Strike</option>
-                          <option value="Geopolitical">Border Blockade</option>
-                        </select>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="btn-primary w-full flex items-center justify-center text-lg mt-6"
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="w-6 h-6 animate-spin mr-3" />
-                      Analyzing Routes &amp; Risks...
-                    </>
-                  ) : (
-                    'Find Optimal Route'
-                  )}
-                </button>
-              </form>
+              <button
+                type="submit"
+                disabled={loading || loader}
+                className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all shadow-lg shadow-blue-900/30 text-sm"
+              >
+                {loader ? (
+                  <><Loader2 className="w-5 h-5 animate-spin" /> Analysing routes &amp; risks...</>
+                ) : (
+                  'Find Optimal Route'
+                )}
+              </button>
 
               {error && (
-                <div className="mt-6 p-4 bg-red-50 border-2 border-red-200 rounded-xl">
-                  <p className="text-red-700 font-semibold">Error: {error}</p>
+                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
+                  <p className="text-red-400 text-sm font-medium">Error: {error}</p>
+                </div>
+              )}
+            </form>
+          </div>
+
+          {/* ── Map / Empty State ── */}
+          <div className="bg-white/10 backdrop-blur-lg border border-white/20 rounded-2xl p-8 h-[920px] flex flex-col">
+            <h2 className="text-xl font-bold text-white mb-6">Route Visualisation</h2>
+            <div className="flex-1 flex items-center justify-center">
+              {loader ? (
+                <div className="text-center">
+                  <div className="relative mb-8 mx-auto w-20 h-20">
+                    <div className="w-20 h-20 border-4 border-white/10 border-t-blue-400 rounded-full animate-spin" />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <Loader2 className="w-7 h-7 text-blue-400 animate-pulse" />
+                    </div>
+                  </div>
+                  <p className="text-white font-medium mb-2">Calculating optimal route...</p>
+                  <p className="text-slate-500 text-sm">Our agents are analysing risks and paths</p>
+                </div>
+              ) : (
+                <div className="text-center">
+                  <div className="w-20 h-20 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-5">
+                    <MapPin className="w-9 h-9 text-slate-600" />
+                  </div>
+                  <p className="text-slate-400 text-sm">Configure parameters and submit to see the route visualisation</p>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Map / Empty State */}
-          <div className="card p-6 h-[920px] hover-lift">
-            <h2 className="text-3xl font-bold mb-6 gradient-text">Route Visualization</h2>
-            {loader ? (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center">
-                  <div className="relative mb-8">
-                    <div className="w-20 h-20 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto"></div>
-                    <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-                      <Loader2 className="w-8 h-8 text-blue-600 animate-pulse" />
-                    </div>
-                  </div>
-                  <p className="text-gray-700 text-xl font-medium mb-2">Please wait, Our agents are calculating the perfect route for you</p>
-                  <p className="text-gray-500 text-sm">This may take a few moments...</p>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center text-gray-500">
-                  <MapPin className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p className="text-lg">
-                    Configure route parameters and submit to see visualization
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-
         </div>
       </div>
+
+      <style jsx>{`
+        .animation-delay-2000 { animation-delay: 2s; }
+        .animation-delay-4000 { animation-delay: 4s; }
+      `}</style>
     </div>
   );
 }

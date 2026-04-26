@@ -8,6 +8,8 @@ interface TransitHubsProps {
   onChange: (hubs: string[]) => void;
 }
 
+const labelClass = "block text-xs font-semibold uppercase tracking-widest text-slate-400 mb-1.5";
+
 const TransitHubs: React.FC<TransitHubsProps> = ({ value, onChange }) => {
   const [inputValue, setInputValue] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
@@ -86,26 +88,30 @@ const TransitHubs: React.FC<TransitHubsProps> = ({ value, onChange }) => {
   }, []);
 
   return (
-    <div className="space-y-3">
-      <label className="form-label">
-        <MapPin className="inline w-5 h-5 mr-2 text-blue-600" />
-        Transit Hubs (Cross-dock Cities)
+    <div className="space-y-4">
+      <label className={`${labelClass} flex items-center`}>
+        <MapPin className="w-3.5 h-3.5 mr-2 text-sky-400" />
+        Transit Hubs 
       </label>
+
+      <p className="text-[11px] text-zinc-500 font-medium leading-relaxed">
+        Add intermediate cities for cross-docking. Logistics will follow this sequence.
+      </p>
       
-      {/* Selected Hubs Display */}
+      {/* Selected Hubs Display: Updated to Midnight & Cyan tags */}
       {value.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {value.map((hub, index) => (
             <div
               key={index}
-              className="inline-flex items-center bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm"
+              className="inline-flex items-center bg-white/10 border border-sky-400/30 text-sky-300 px-3 py-1.5 rounded-xl text-xs font-bold uppercase tracking-tight"
             >
-              <MapPin className="w-3 h-3 mr-1" />
+              <MapPin className="w-3 h-3 mr-1.5 opacity-70" />
               {hub}
               <button
                 type="button"
                 onClick={() => handleRemoveHub(index)}
-                className="ml-2 text-blue-600 hover:text-blue-800"
+                className="ml-2.5 p-0.5 rounded-md hover:bg-sky-400/20 text-sky-500 hover:text-sky-300 transition-colors"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -113,45 +119,43 @@ const TransitHubs: React.FC<TransitHubsProps> = ({ value, onChange }) => {
           ))}
         </div>
       )}
-
-      {/* Input for adding new hubs */}
+  
+      {/* Input for adding new hubs: Styled to match CityAutocomplete */}
       <div className="relative" ref={inputRef}>
-        <div className="relative">
-          <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+        <div className="relative group">
+          <MapPin className={`absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 transition-colors duration-200 ${isOpen ? 'text-sky-400' : 'text-zinc-500'}`} />
           <input
             type="text"
             value={inputValue}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             placeholder="Add transit hub city..."
-            className="input-field pl-10"
-            onFocus={() => {
-              if (suggestions.length > 0) setIsOpen(true);
-            }}
+            onFocus={() => suggestions.length > 0 && setIsOpen(true)}
+            className="w-full bg-white/10 border border-zinc-800 text-zinc-200 text-sm rounded-xl pl-10 pr-4 py-3 outline-none transition-all duration-200 placeholder:text-zinc-500 focus:border-sky-400 focus:bg-white/10"
           />
         </div>
         
+        {/* Dropdown: Styled with Cyan borders and Midnight background */}
         {isOpen && suggestions.length > 0 && (
-          <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-            {suggestions.map((city, index) => (
-              <div
-                key={index}
-                className="px-4 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0 transition-colors"
-                onClick={() => handleAddHub(city)}
-              >
-                <div className="flex items-center">
-                  <MapPin className="w-4 h-4 mr-2 text-gray-400" />
-                  <span className="text-sm">{city}</span>
+          <div 
+            className="absolute z-[100] w-full mt-2 bg-zinc-900 border border-sky-400/50 rounded-xl shadow-2xl shadow-black overflow-hidden"
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            <div className="max-h-60 overflow-y-auto custom-scrollbar">
+              {suggestions.map((city, index) => (
+                <div
+                  key={index}
+                  className="px-4 py-2.5 hover:bg-sky-400/10 cursor-pointer flex items-center group transition-colors border-b border-zinc-800 last:border-0"
+                  onClick={() => handleAddHub(city)}
+                >
+                  <MapPin className="w-3.5 h-3.5 mr-3 text-zinc-600 group-hover:text-sky-400 transition-colors" />
+                  <span className="text-sm text-zinc-300 group-hover:text-white font-medium">{city}</span>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
       </div>
-      
-      <p className="text-sm text-gray-600 mt-1">
-        Add intermediate cities for cross-docking. Cities will be visited in order.
-      </p>
     </div>
   );
 };

@@ -24,7 +24,7 @@ GNEWS_API_KEY        = os.getenv("GNEWS_API_KEY", "YOUR_NEWSDATA_KEY")
  
 genai.configure(api_key=GEMINI_API_KEY)
 # Using 1.5-flash to completely bypass the 5-requests-per-minute limit of 2.5
-risk_model = genai.GenerativeModel("gemini-2.5-flash")
+risk_model = genai.GenerativeModel("gemini-3.1-flash-lite-preview")
  
 # ==========================================
 # HELPERS
@@ -163,23 +163,39 @@ class ComprehensiveRiskOutput(BaseModel):
 # ==========================================
 def master_risk_agent(state: RiskState):
     print("🧠 [DEBUG] Master Risk Agent called with cities:", state['nodes'])
+    print(state)
     
     prompt = f"""
-    You are a Master Logistics Risk Analyst. Evaluate the risk (0.0=Safe, 1.0=Catastrophic)
-    for the following cities across three categories: Weather, Logistics, and Geopolitical.
+    You are a Master Logistics Risk Analyst.
+    Your task is to transform raw disruption data into a structured Risk Map.
 
-    CRITICAL FALSE-POSITIVE INSTRUCTIONS:
-    - ONLY assign >0.0 if the data explicitly describes an ACTUAL, CURRENT NEGATIVE DISRUPTION.
-    - If news is unrelated, positive, or says "No relevant news found", assign 0.0.
+    ### MANDATORY OUTPUT RULES:
+    1. Output a JSON object with EXACTLY three keys: "weather_risks", "news_risks", and "geo_risks".
+    2. EVERY city in the list below MUST appear as a key in ALL THREE dictionaries.
+    3. Cities with NO disruption data get value 0.0. Cities WITH disruption data MUST get a non-zero score.
+    4. DO NOT return empty dictionaries under any circumstances.
+    5. You MUST process ALL provided data and reflect it in scores.
 
-    DATA:
-    Weather:           {json.dumps(state['weather_data'])}
-    Logistics News:    {json.dumps(state['logistics_news'])}
-    Geopolitical News: {json.dumps(state['geo_news'])}
+    ### RISK SCALING:
+    - 0.0: Safe / No data / Positive news
+    - 0.1 - 0.4: Minor delays or warnings
+    - 0.5 - 0.8: Significant disruptions (strikes, heavy storms)
+    - 0.9 - 1.0: Total blockades, closures, catastrophic events
 
-    Return a valid JSON object matching the requested schema.
-    Every city listed must appear in all three risk dictionaries.
-    Cities: {state['nodes']}
+    ### DATA TO ANALYZE:
+    Weather Data:        {json.dumps(state['weather_data'])}
+    Logistics News:      {json.dumps(state['logistics_news'])}
+    Geopolitical News:   {json.dumps(state['geo_news'])}
+
+    ### CITIES TO MAP (you MUST include ALL of these as keys):
+    {state['nodes']}
+
+    ### EXPECTED OUTPUT FORMAT (example for cities ["A", "B"]):
+    {{
+    "weather_risks":  {{"A": 0.0, "B": 0.7}},
+    "news_risks":     {{"A": 0.3, "B": 0.0}},
+    "geo_risks":      {{"A": 0.0, "B": 0.0}}
+    }}
     """
 
     try:
@@ -187,11 +203,12 @@ def master_risk_agent(state: RiskState):
         response = _gemini_with_retry(
             prompt,
             generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=ComprehensiveRiskOutput,
+                response_mime_type="application/json"
             ),
         )
+        print(response)
         result = json.loads(response.text)
+        print(result)
         state["weather_risk"] = result.get("weather_risks", {})
         state["news_risk"]    = result.get("news_risks",    {})
         state["geo_risk"]     = result.get("geo_risks",     {})

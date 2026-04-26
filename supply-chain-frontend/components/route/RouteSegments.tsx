@@ -7,7 +7,7 @@ interface RouteSegmentsProps {
 }
 
 const getTransportModeColor = (mode: string): string => {
-  if (mode === "Air") return "255, 80, 80";      // red
+  if (mode === "Air") return "255, 191, 0"; // yellow/amber
   if (mode === "Ocean") return "50, 160, 255";   // blue
   return "80, 255, 140";                           // green = Truck/Rail
 };

@@ -1,4 +1,5 @@
 export { default as Header } from './Header';
+export { default as ControlTowerInsights } from './ControlTowerInsights';
 export { default as RouteVisualization } from './RouteVisualization';
 export { default as RouteDetails } from './RouteDetails';
 export { default as RouteSegments } from './RouteSegments';
