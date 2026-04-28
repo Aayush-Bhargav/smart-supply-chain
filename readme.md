@@ -2,8 +2,8 @@
 
 *An AI-native logistics control tower that combines graph-based delay prediction, live risk intelligence, and operator-in-the-loop rerouting for global shipments.*
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-Hosted_on_Vercel-black?style=for-the-badge&logo=vercel)](https://supply-chain-frontend-omega.vercel.app)
-[![Backend](https://img.shields.io/badge/API-Google_Cloud_Run-blue?style=for-the-badge&logo=googlecloud)](https://supply-chain-frontend-omega.vercel.app)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Hosted_on_Vercel-black?style=for-the-badge&logo=vercel)]
+[![Backend](https://img.shields.io/badge/API-Google_Cloud_Run-blue?style=for-the-badge&logo=googlecloud)]
 
 > **Live Application:** [Access the Smart Supply Chain Control Tower here](https://supply-chain-frontend-omega.vercel.app)
 ## Overview
