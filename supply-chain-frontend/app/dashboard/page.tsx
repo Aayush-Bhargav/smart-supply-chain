@@ -998,9 +998,9 @@ export default function DashboardPage() {
             </div>
 
             <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
-              <p className="text-xs uppercase tracking-[0.2em] text-emerald-400">Live Reroutes</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-emerald-400">Reroutes</p>
               <div className="flex items-center gap-2 mt-2">
-                <p className="text-3xl font-bold text-white">{liveDecisionCount}</p>
+                <p className="text-3xl font-bold text-white">{Math.min(totalShipments, liveDecisionCount)}</p>
                 <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
               </div>
               <p className="text-sm text-gray-300 mt-1">AI-driven autonomous monitoring</p>
@@ -1021,7 +1021,7 @@ export default function DashboardPage() {
             <div className="rounded-2xl border border-white/15 bg-white/10 backdrop-blur-lg p-5">
                 <p className="text-xs uppercase tracking-[0.2em] text-sky-400">Avg Risk Reduction</p>
                 <p className="text-3xl font-bold text-white mt-2">
-                  {rerouteAlertCount > 0 ? Math.round(35 + Math.random() * 20) + "%" : "—"}
+                  {rerouteAlertCount > 0 ? Math.round((liveDecisionCount/rerouteAlertCount)*100) + "%" : "—"}
                 </p>
                 <p className="text-sm text-gray-300 mt-1">Efficiency from applied reroutes</p>
             </div>
@@ -1405,7 +1405,7 @@ export default function DashboardPage() {
                               <div className="space-y-2 mb-8">
                                 <p className="text-slate-200 text-sm leading-relaxed">
                                   Are you sure you want to remove shipment{' '}
-                                  <span className="text-white font-bold">#{shipment.id.slice(0, 8)}</span>?
+                                  <span className="text-white font-bold">#{shipment.id.slice(0, 8).toUpperCase()}</span>?
                                 </p>
                                 <p className="text-slate-500 text-xs">
                                   This will permanently purge the tracking data and route history from the control tower.
