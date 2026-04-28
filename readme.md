@@ -29,14 +29,14 @@ On top of the routing layer, the project runs a Gemini-powered LangGraph risk en
 
 ## System Architecture
 
-```text
-Next.js Client
-  -> FastAPI Routing Gateway
-      -> GNN Delay Regressor (PyTorch Geometric GraphSAGE)
-      -> Risk Engine (LangGraph + Gemini + OpenWeatherMap + GNews)
-      -> NetworkX Route Search / Re-route Logic
-  -> Firestore Persistence + Dashboard Monitoring
-```
+Architecture Diagram
+<img width="821" height="340" alt="image" src="https://github.com/user-attachments/assets/e2f400fa-06a5-49f7-a11e-e8b19243d322" />
+
+Route Recommendation System Flow
+<img width="1189" height="451" alt="Screenshot from 2026-04-28 01-26-11" src="https://github.com/user-attachments/assets/6666baa7-d7b5-41c6-b250-03f3898b82db" />
+
+Live Tracking System Flow
+<img width="848" height="263" alt="image" src="https://github.com/user-attachments/assets/db79eda0-a9e7-46a6-ad20-052fa371644e" />
 
 ### Client: Next.js Frontend
 
